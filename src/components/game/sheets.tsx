@@ -1,0 +1,837 @@
+import { useMemo, useState } from 'react'
+import { Link, useNavigate } from 'react-router'
+import { useAuth } from '../../auth'
+import { lossDiscountDue } from '../../lib/accounting'
+import type { PlayerLine } from '../../lib/accounting'
+import {
+  addExpense,
+  addTip,
+  addTx,
+  createPlayer,
+  deleteExpense,
+  deleteGame,
+  deleteTip,
+  deleteTx,
+  updateExpense,
+  updateGame,
+  updateTip,
+  updateTx,
+} from '../../lib/api'
+import type { RecordStamp } from '../../lib/actors'
+import { formatClock, formatStamp, money, parseAmount } from '../../lib/format'
+import { EXPENSE_CATEGORIES, PAY_METHODS, methodLabel } from '../../lib/types'
+import type { DealerTip, Expense, ExpenseCategory, Game, PartnerAccount, PayMethod, Player, Transaction } from '../../lib/types'
+import { Icon } from '../Icon'
+import {
+  AmountInput,
+  Avatar,
+  Button,
+  Chip,
+  Field,
+  Money,
+  PercentInput,
+  Segmented,
+  Sheet,
+  TextInput,
+  cx,
+  inputCls,
+  useAction,
+  useFeedback,
+} from '../ui'
+import { ChipCounter } from './ChipCounter'
+
+const amountStr = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
+const pctStr = (n: number) => (Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2))))
+
+function QuickAmounts({ amounts, value, onPick }: { amounts: number[]; value: string; onPick: (v: string) => void }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {amounts.map((a) => (
+        <Chip key={a} active={parseAmount(value) === a} onClick={() => onPick(amountStr(a))}>
+          {money(a)}
+        </Chip>
+      ))}
+    </div>
+  )
+}
+
+function MethodField({ label, value, onChange, accountHint }: { label: string; value: PayMethod; onChange: (m: PayMethod) => void; accountHint: string }) {
+  return (
+    <Field label={label} hint={value === 'account' ? accountHint : undefined}>
+      <Segmented value={value === 'other' ? 'cash' : value} options={PAY_METHODS} onChange={onChange} />
+    </Field>
+  )
+}
+
+function DeleteRow({ label, onDelete }: { label: string; onDelete: () => Promise<boolean> }) {
+  const { confirm } = useFeedback()
+  return (
+    <button
+      type="button"
+      className="mt-6 flex items-center gap-1.5 text-sm text-loss/90 hover:text-loss"
+      onClick={async () => {
+        if (await confirm({ title: `Delete ${label}?`, message: 'This is recorded in the history log.', confirmLabel: 'Delete', danger: true }))
+          await onDelete()
+      }}
+    >
+      <Icon name="trash" className="size-4" /> Delete {label}
+    </button>
+  )
+}
+
+/** Run an action; on success refresh and close. */
+function useSave(onSaved: () => void, onClose: () => void) {
+  const { busy, run } = useAction()
+  const save = async (fn: () => Promise<unknown>, msg: string) => {
+    const ok = await run(fn, msg)
+    if (ok) {
+      onSaved()
+      onClose()
+    }
+    return ok
+  }
+  return { busy, save }
+}
+
+// ---------------------------------------------------------------- Buy-in
+
+export function BuyInSheet({
+  game,
+  player,
+  existing,
+  quickAmounts,
+  onClose,
+  onSaved,
+}: {
+  game: Game
+  player: { id: string; name: string }
+  existing?: Transaction
+  quickAmounts: number[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { busy, save } = useSave(onSaved, onClose)
+  const [amount, setAmount] = useState(existing ? amountStr(existing.amount) : '')
+  const [method, setMethod] = useState<PayMethod>(existing?.method ?? 'cash')
+  const [note, setNote] = useState(existing?.note ?? '')
+  const value = parseAmount(amount)
+  const valid = value > 0
+
+  const submit = () =>
+    save(
+      () =>
+        existing
+          ? updateTx(existing.id, { amount: value, method, note: note.trim() || null })
+          : addTx({ game_id: game.id, player_id: player.id, kind: 'buy_in', amount: value, method, note: note.trim() || null }),
+      existing ? 'Buy-in updated' : `${player.name} bought in for ${money(value)}`,
+    )
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={existing ? 'Edit buy-in' : 'Buy-in'}
+      subtitle={player.name}
+      footer={
+        <Button variant="primary" size="lg" className="w-full" disabled={!valid} loading={busy} onClick={submit}>
+          {existing ? 'Save changes' : valid ? `Record ${money(value)} buy-in` : 'Record buy-in'}
+        </Button>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (valid) void submit()
+        }}
+      >
+        <AmountInput value={amount} onChange={setAmount} autoFocus />
+        <QuickAmounts amounts={quickAmounts} value={amount} onPick={setAmount} />
+        <MethodField label="Paid with" value={method} onChange={setMethod} accountHint="Goes on the player’s account — they owe it until they pay." />
+        <Field label="Note (optional)">
+          <TextInput value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} />
+        </Field>
+      </form>
+      {existing && <DeleteRow label="this buy-in" onDelete={() => save(() => deleteTx(existing.id), 'Buy-in deleted')} />}
+    </Sheet>
+  )
+}
+
+// ---------------------------------------------------------------- Add player
+
+export function AddPlayerSheet({
+  game,
+  roster,
+  inGame,
+  quickAmounts,
+  onClose,
+  onSaved,
+}: {
+  game: Game
+  roster: Player[]
+  inGame: Set<string>
+  quickAmounts: number[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { busy, save } = useSave(onSaved, onClose)
+  const [query, setQuery] = useState('')
+  const [picked, setPicked] = useState<{ id: string | null; name: string } | null>(null)
+  const [amount, setAmount] = useState('')
+  const [method, setMethod] = useState<PayMethod>('cash')
+
+  const q = query.trim().toLowerCase()
+  const available = useMemo(
+    () => roster.filter((p) => !inGame.has(p.id) && (!q || p.name.toLowerCase().includes(q))).slice(0, 60),
+    [roster, inGame, q],
+  )
+  const exact = roster.find((p) => p.name.trim().toLowerCase() === q)
+  const value = parseAmount(amount)
+
+  const submit = () =>
+    picked &&
+    save(async () => {
+      const id = picked.id ?? (await createPlayer(picked.name)).id
+      await addTx({ game_id: game.id, player_id: id, kind: 'buy_in', amount: value, method, note: null })
+    }, `${picked.name} bought in for ${money(value)}`)
+
+  if (!picked) {
+    return (
+      <Sheet open onClose={onClose} title="Seat a player">
+        <div className="relative">
+          <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-faint" />
+          <TextInput
+            autoFocus
+            placeholder="Search or type a new name"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            maxLength={60}
+            className="pl-9"
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              if (available.length === 1) setPicked({ id: available[0].id, name: available[0].name })
+              else if (q && !exact) setPicked({ id: null, name: query.trim() })
+            }}
+          />
+        </div>
+        <div className="mt-3 space-y-0.5">
+          {q && !exact && (
+            <button
+              type="button"
+              onClick={() => setPicked({ id: null, name: query.trim() })}
+              className="flex w-full items-center gap-3 rounded-[12px] border border-dashed border-brass/40 px-3 py-2.5 text-left text-brass hover:bg-brass/[0.06]"
+            >
+              <span className="inline-flex size-9 items-center justify-center rounded-full bg-brass/15">
+                <Icon name="plus" className="size-4" />
+              </span>
+              New player “{query.trim()}”
+            </button>
+          )}
+          {exact && inGame.has(exact.id) && (
+            <p className="px-1 py-2 text-sm text-muted">{exact.name} is already seated — use Buy-in on their row.</p>
+          )}
+          {available.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => setPicked({ id: p.id, name: p.name })}
+              className="flex w-full items-center gap-3 rounded-[12px] px-2 py-2 text-left hover:bg-surface-2"
+            >
+              <Avatar name={p.name} />
+              <span className="truncate">{p.name}</span>
+            </button>
+          ))}
+          {!q && available.length === 0 && <p className="px-1 py-6 text-center text-sm text-muted">Type a name to add your first player.</p>}
+        </div>
+      </Sheet>
+    )
+  }
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={picked.name}
+      subtitle={
+        <button type="button" className="underline underline-offset-2" onClick={() => setPicked(null)}>
+          {picked.id ? 'Choose someone else' : 'New player · change'}
+        </button>
+      }
+      footer={
+        <Button variant="primary" size="lg" className="w-full" disabled={!(value > 0)} loading={busy} onClick={() => void submit()}>
+          {value > 0 ? `Seat with ${money(value)}` : 'Enter the buy-in'}
+        </Button>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (value > 0) void submit()
+        }}
+      >
+        <AmountInput value={amount} onChange={setAmount} autoFocus />
+        <QuickAmounts amounts={quickAmounts} value={amount} onPick={setAmount} />
+        <MethodField label="Paid with" value={method} onChange={setMethod} accountHint="Goes on the player’s account — they owe it until they pay." />
+      </form>
+    </Sheet>
+  )
+}
+
+// ---------------------------------------------------------------- Cash-out (+ loss discount)
+
+export function CashOutSheet({
+  game,
+  line,
+  existing,
+  onClose,
+  onSaved,
+}: {
+  game: Game
+  line: PlayerLine
+  existing?: Transaction
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { busy, save } = useSave(onSaved, onClose)
+  const [amount, setAmount] = useState(existing ? amountStr(existing.amount) : '')
+  const [method, setMethod] = useState<PayMethod>(existing?.method ?? 'cash')
+  const [note, setNote] = useState(existing?.note ?? '')
+  const [counting, setCounting] = useState(false)
+  const [giveDiscount, setGiveDiscount] = useState(true)
+  const value = parseAmount(amount)
+  const valid = value >= 0 && amount.trim() !== ''
+
+  const replacing = existing?.amount ?? 0
+  const due = valid ? lossDiscountDue(line, value, game.loss_discount_pct, replacing) : 0
+  const discount = giveDiscount ? due : 0
+  const otherCashOuts = line.cashOuts - replacing
+  const net = (valid ? value : 0) + otherCashOuts + line.discounts + discount - line.buyIns
+
+  const submit = () =>
+    save(
+      async () => {
+        const n = note.trim() || null
+        if (existing) await updateTx(existing.id, { amount: value, method, note: n })
+        else await addTx({ game_id: game.id, player_id: line.playerId, kind: 'cash_out', amount: value, method, note: n })
+        if (discount > 0)
+          await addTx({
+            game_id: game.id,
+            player_id: line.playerId,
+            kind: 'discount',
+            amount: discount,
+            method: method === 'account' ? 'account' : 'cash',
+            note: `${game.loss_discount_pct}% loss discount`,
+          })
+      },
+      existing ? 'Cash-out updated' : `${line.name} cashed out ${money(value + discount)}`,
+    )
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={existing ? 'Edit cash-out' : 'Cash out'}
+      subtitle={line.name}
+      footer={
+        <div className="space-y-3">
+          <div className="flex items-center justify-between rounded-[12px] border border-line bg-bg px-4 py-3">
+            <div className="text-[13px] leading-relaxed text-muted">
+              In <Money value={line.buyIns} className="text-ink" />
+              {otherCashOuts > 0 && (
+                <>
+                  {' '}
+                  · earlier <Money value={otherCashOuts} className="text-ink" />
+                </>
+              )}
+              {discount > 0 && (
+                <>
+                  <br />+ <Money value={discount} className="text-brass" /> loss discount
+                </>
+              )}
+            </div>
+            {valid ? (
+              <div className="text-right">
+                <div className="text-xs text-muted">{net > 0 ? 'Won' : net < 0 ? 'Lost' : 'Even'}</div>
+                <Money value={net} signed colored className="font-display text-[30px] leading-none" />
+              </div>
+            ) : (
+              <span className="text-sm text-faint">Result shows here</span>
+            )}
+          </div>
+          <Button variant="primary" size="lg" className="w-full" disabled={!valid} loading={busy} onClick={submit}>
+            {existing ? 'Save changes' : valid ? `Pay out ${money(value + discount)}` : 'Enter their chips'}
+          </Button>
+        </div>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (valid) void submit()
+        }}
+      >
+        <Field label="Chips to pay out">
+          <AmountInput value={amount} onChange={setAmount} autoFocus={!counting} />
+        </Field>
+        <div className="flex flex-wrap gap-2">
+          <Chip active={valid && value === 0} onClick={() => setAmount('0')}>
+            Busted
+          </Chip>
+          <Chip active={valid && value === line.buyIns} onClick={() => setAmount(amountStr(line.buyIns))}>
+            Even · {money(line.buyIns)}
+          </Chip>
+          <Chip active={counting} onClick={() => setCounting((c) => !c)}>
+            <span className="inline-flex items-center gap-1.5">
+              <Icon name="calc" className="size-4" /> Count chips
+            </span>
+          </Chip>
+        </div>
+        {counting && <ChipCounter onTotal={(t) => setAmount(amountStr(t))} />}
+
+        {game.loss_discount_pct > 0 && due > 0 && (
+          <label className="flex cursor-pointer items-center gap-3 rounded-[12px] border border-brass/30 bg-brass/[0.06] px-3.5 py-3">
+            <input type="checkbox" checked={giveDiscount} onChange={(e) => setGiveDiscount(e.target.checked)} className="size-4 accent-[#d6ae62]" />
+            <span className="flex-1 text-sm">
+              Loss discount <span className="text-muted">({game.loss_discount_pct}% of the loss)</span>
+            </span>
+            <Money value={due} className="font-semibold text-brass" />
+          </label>
+        )}
+
+        <MethodField label="Paid out with" value={method} onChange={setMethod} accountHint="Credited to the player’s account instead of paid now." />
+        <Field label="Note (optional)">
+          <TextInput value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} />
+        </Field>
+      </form>
+      {existing && <DeleteRow label="this cash-out" onDelete={() => save(() => deleteTx(existing.id), 'Cash-out deleted')} />}
+    </Sheet>
+  )
+}
+
+/** Adjust or remove a loss discount that was given. */
+export function DiscountSheet({
+  player,
+  existing,
+  onClose,
+  onSaved,
+}: {
+  player: string
+  existing: Transaction
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { busy, save } = useSave(onSaved, onClose)
+  const [amount, setAmount] = useState(amountStr(existing.amount))
+  const value = parseAmount(amount)
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title="Loss discount"
+      subtitle={player}
+      footer={
+        <Button variant="primary" size="lg" className="w-full" disabled={!(value > 0)} loading={busy} onClick={() => save(() => updateTx(existing.id, { amount: value }), 'Discount updated')}>
+          Save changes
+        </Button>
+      }
+    >
+      <AmountInput value={amount} onChange={setAmount} autoFocus />
+      <DeleteRow label="this discount" onDelete={() => save(() => deleteTx(existing.id), 'Discount removed')} />
+    </Sheet>
+  )
+}
+
+// ---------------------------------------------------------------- Player in game
+
+const TX_LABEL: Record<Transaction['kind'], string> = { buy_in: 'Buy-in', cash_out: 'Cash-out', discount: 'Loss discount' }
+
+export function PlayerGameSheet({
+  line,
+  canEdit,
+  stamps,
+  onClose,
+  onBuyIn,
+  onCashOut,
+  onEditTx,
+}: {
+  line: PlayerLine
+  canEdit: boolean
+  stamps?: Map<string, RecordStamp>
+  onClose: () => void
+  onBuyIn: () => void
+  onCashOut: () => void
+  onEditTx: (t: Transaction) => void
+}) {
+  const out = line.status === 'out'
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={line.name}
+      subtitle={out ? 'Cashed out' : 'At the table'}
+      footer={
+        canEdit ? (
+          <div className="flex gap-3">
+            <Button className="flex-1" size="lg" icon="plus" onClick={onBuyIn}>
+              Buy-in
+            </Button>
+            <Button className="flex-1" size="lg" variant="felt" icon="cashout" onClick={onCashOut}>
+              Cash out
+            </Button>
+          </div>
+        ) : undefined
+      }
+    >
+      <div className="grid grid-cols-3 divide-x divide-line rounded-[12px] border border-line bg-bg text-center">
+        <div className="p-3">
+          <div className="text-xs text-muted">Bought in</div>
+          <Money value={line.buyIns} className="font-display text-2xl" />
+        </div>
+        <div className="p-3">
+          <div className="text-xs text-muted">Paid out</div>
+          <Money value={line.cashOuts + line.discounts} className="font-display text-2xl" />
+        </div>
+        <div className="p-3">
+          <div className="text-xs text-muted">Net</div>
+          {out ? <Money value={line.net} signed colored className="font-display text-2xl" /> : <span className="font-display text-2xl text-faint">—</span>}
+        </div>
+      </div>
+
+      <div className="mt-4 divide-y divide-line rounded-[12px] border border-line">
+        {line.txs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            disabled={!canEdit}
+            onClick={() => onEditTx(t)}
+            className="flex w-full items-center gap-3 px-3 py-2.5 text-left enabled:hover:bg-surface-2/60"
+          >
+            <span
+              className={cx(
+                'inline-flex size-8 shrink-0 items-center justify-center rounded-full border',
+                t.kind === 'buy_in' ? 'border-line text-muted' : t.kind === 'discount' ? 'border-brass/40 text-brass' : 'border-felt text-felt-ink',
+              )}
+            >
+              <Icon name={t.kind === 'buy_in' ? 'plus' : t.kind === 'discount' ? 'percent' : 'cashout'} className="size-3.5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm">
+                {TX_LABEL[t.kind]}
+                <span className="text-muted"> · {methodLabel(t.method)}</span>
+                {t.updated_at && (
+                  <span className="text-faint">
+                    {' '}
+                    · edited {formatClock(t.updated_at)}
+                    {stamps?.get(t.id)?.editedBy && ` by ${stamps.get(t.id)!.editedBy}`}
+                  </span>
+                )}
+              </span>
+              <span className="block truncate text-xs text-faint tnum" title={formatStamp(t.created_at)}>
+                {formatClock(t.created_at)}
+                {stamps?.get(t.id)?.createdBy && ` · ${stamps.get(t.id)!.createdBy}`}
+                {t.note && ` · ${t.note}`}
+              </span>
+            </span>
+            <Money value={t.amount} className="font-medium" />
+            {canEdit && <Icon name="edit" className="size-3.5 text-faint" />}
+          </button>
+        ))}
+      </div>
+
+      <Link to={`/players/${line.playerId}`} className="mt-4 inline-flex items-center gap-1 text-sm text-muted hover:text-ink">
+        Account & history <Icon name="next" className="size-4" />
+      </Link>
+    </Sheet>
+  )
+}
+
+// ---------------------------------------------------------------- Dealer tip
+
+export function TipSheet({
+  game,
+  existing,
+  dealerNames,
+  onClose,
+  onSaved,
+}: {
+  game: Game
+  existing?: DealerTip
+  dealerNames: string[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { busy, save } = useSave(onSaved, onClose)
+  const [dealer, setDealer] = useState(existing?.dealer_name ?? dealerNames[0] ?? '')
+  const [amount, setAmount] = useState(existing ? amountStr(existing.amount) : '')
+  const [note, setNote] = useState(existing?.note ?? '')
+  const value = parseAmount(amount)
+  const valid = value > 0 && dealer.trim().length > 0
+  const tax = valid ? Math.round(value * game.tip_tax_pct) / 100 : 0
+
+  const submit = () => {
+    const payload = { dealer_name: dealer.trim(), amount: value, note: note.trim() || null }
+    return save(
+      () => (existing ? updateTip(existing.id, payload) : addTip({ ...payload, game_id: game.id })),
+      existing ? 'Tip updated' : `Tip of ${money(value)} for ${dealer.trim()} recorded`,
+    )
+  }
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={existing ? 'Edit dealer tip' : 'Dealer tip'}
+      footer={
+        <div className="space-y-3">
+          {valid && game.tip_tax_pct > 0 && (
+            <div className="flex items-center justify-between rounded-[12px] border border-line bg-bg px-4 py-3 text-sm">
+              <span className="text-muted">
+                House keeps {game.tip_tax_pct}% · <Money value={tax} className="text-brass" />
+              </span>
+              <span>
+                {dealer.trim() || 'Dealer'} gets <Money value={value - tax} className="font-semibold" />
+              </span>
+            </div>
+          )}
+          <Button variant="primary" size="lg" className="w-full" disabled={!valid} loading={busy} onClick={submit}>
+            {existing ? 'Save changes' : 'Record tip'}
+          </Button>
+        </div>
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (valid) void submit()
+        }}
+      >
+        <Field label="Dealer">
+          <TextInput value={dealer} onChange={(e) => setDealer(e.target.value)} maxLength={60} placeholder="Dealer name" />
+        </Field>
+        {dealerNames.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {dealerNames.map((n) => (
+              <Chip key={n} active={dealer.trim().toLowerCase() === n.toLowerCase()} onClick={() => setDealer(n)}>
+                {n}
+              </Chip>
+            ))}
+          </div>
+        )}
+        <Field label="Tip amount" hint={`Chips taken off the table for the dealer. The house keeps ${game.tip_tax_pct}% as tip tax.`}>
+          <AmountInput value={amount} onChange={setAmount} autoFocus={!!dealer} />
+        </Field>
+        <Field label="Note (optional)">
+          <TextInput value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} />
+        </Field>
+      </form>
+      {existing && <DeleteRow label="this tip" onDelete={() => save(() => deleteTip(existing.id), 'Tip deleted')} />}
+    </Sheet>
+  )
+}
+
+// ---------------------------------------------------------------- Expense
+
+export function ExpenseSheet({
+  game,
+  existing,
+  partners,
+  onClose,
+  onSaved,
+}: {
+  game: Game
+  existing?: Expense
+  partners: PartnerAccount[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { busy, save } = useSave(onSaved, onClose)
+  const [category, setCategory] = useState<ExpenseCategory>(existing?.category ?? 'food')
+  const [description, setDescription] = useState(existing?.description ?? '')
+  const [amount, setAmount] = useState(existing ? amountStr(existing.amount) : '')
+  // '' = game bank
+  const [payer, setPayer] = useState<string>(existing ? (existing.partner_id ?? '') : (partners[0]?.id ?? ''))
+  const value = parseAmount(amount)
+  const valid = value > 0
+
+  const submit = () => {
+    const payload = { category, description: description.trim() || null, amount: value, partner_id: payer || null }
+    return save(
+      () => (existing ? updateExpense(existing.id, payload) : addExpense({ ...payload, game_id: game.id })),
+      existing ? 'Expense updated' : 'Expense recorded',
+    )
+  }
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={existing ? 'Edit expense' : 'Add expense'}
+      footer={
+        <Button variant="primary" size="lg" className="w-full" disabled={!valid} loading={busy} onClick={submit}>
+          {existing ? 'Save changes' : 'Record expense'}
+        </Button>
+      }
+    >
+      <form
+        className="space-y-5"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (valid) void submit()
+        }}
+      >
+        <Field label="Amount">
+          <AmountInput value={amount} onChange={setAmount} autoFocus />
+        </Field>
+        <Field label="Who paid?" hint={payer ? 'Credited to this partner’s account — the business owes it back.' : 'Paid out of the game’s cash.'}>
+          <div className="grid grid-cols-2 gap-2">
+            {partners.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setPayer(p.id)}
+                className={cx(
+                  'flex items-center gap-2.5 rounded-[12px] border px-2.5 py-2 text-left text-sm transition-colors',
+                  payer === p.id ? 'border-brass/70 bg-brass/[0.08]' : 'border-line bg-surface-2 hover:border-[#3a3a33]',
+                )}
+              >
+                <Avatar name={p.name} size={28} />
+                <span className="truncate">{p.name}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => setPayer('')}
+              className={cx(
+                'flex items-center gap-2.5 rounded-[12px] border px-2.5 py-2 text-left text-sm transition-colors',
+                payer === '' ? 'border-brass/70 bg-brass/[0.08]' : 'border-line bg-surface-2 hover:border-[#3a3a33]',
+              )}
+            >
+              <span className="inline-flex size-7 items-center justify-center rounded-full border border-line bg-bg text-muted">
+                <Icon name="wallet" className="size-3.5" />
+              </span>
+              Game bank
+            </button>
+          </div>
+          {partners.length === 0 && (
+            <span className="mt-2 block text-xs text-faint">
+              No partner accounts yet — add them on the{' '}
+              <Link to="/partners" className="underline">
+                Partners
+              </Link>{' '}
+              page.
+            </span>
+          )}
+        </Field>
+        <Field label="Category">
+          <div className="flex flex-wrap gap-2">
+            {EXPENSE_CATEGORIES.map((c) => (
+              <Chip key={c.value} active={category === c.value} onClick={() => setCategory(c.value)}>
+                {c.label}
+              </Chip>
+            ))}
+          </div>
+        </Field>
+        <Field label="Description (optional)">
+          <TextInput value={description} onChange={(e) => setDescription(e.target.value)} maxLength={200} placeholder="e.g. Pizza x4" />
+        </Field>
+      </form>
+      {existing && <DeleteRow label="this expense" onDelete={() => save(() => deleteExpense(existing.id), 'Expense deleted')} />}
+    </Sheet>
+  )
+}
+
+// ---------------------------------------------------------------- Edit game
+
+export function EditGameSheet({ game, onClose, onSaved }: { game: Game; onClose: () => void; onSaved: () => void }) {
+  const { isAdmin } = useAuth()
+  const { confirm } = useFeedback()
+  const navigate = useNavigate()
+  const { busy, save } = useSave(onSaved, onClose)
+  const { run } = useAction()
+  const [name, setName] = useState(game.name)
+  const [date, setDate] = useState(game.game_date)
+  const [notes, setNotes] = useState(game.notes ?? '')
+  const [tipTax, setTipTax] = useState(pctStr(game.tip_tax_pct))
+  const [discount, setDiscount] = useState(pctStr(game.loss_discount_pct))
+  const tipTaxN = Number(tipTax || 0)
+  const discountN = Number(discount || 0)
+  const pctOk = (n: number) => Number.isFinite(n) && n >= 0 && n <= 100
+  const valid = name.trim() && date && pctOk(tipTaxN) && pctOk(discountN)
+  const editable = game.status === 'open'
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title="Game settings"
+      footer={
+        <Button
+          variant="primary"
+          size="lg"
+          className="w-full"
+          disabled={!valid}
+          loading={busy}
+          onClick={() =>
+            save(
+              () =>
+                updateGame(game.id, {
+                  name: name.trim(),
+                  game_date: date,
+                  notes: notes.trim() || null,
+                  ...(editable ? { tip_tax_pct: tipTaxN, loss_discount_pct: discountN } : {}),
+                }),
+              'Game updated',
+            )
+          }
+        >
+          Save changes
+        </Button>
+      }
+    >
+      <div className="space-y-4">
+        <Field label="Name">
+          <TextInput value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
+        </Field>
+        <Field label="Date">
+          <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Tip tax">
+            <PercentInput value={tipTax} onChange={setTipTax} />
+          </Field>
+          <Field label="Loss discount">
+            <PercentInput value={discount} onChange={setDiscount} />
+          </Field>
+        </div>
+        <p className="-mt-1 text-xs leading-relaxed text-faint">
+          Tip tax is the house’s cut of dealer tips. Loss discount gives losing players that % of their loss back when they cash out.
+          {!editable && ' Reopen the game to change these.'}
+        </p>
+        <Field label="Notes">
+          <textarea className={cx(inputCls, 'h-24 py-2')} value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={1000} />
+        </Field>
+      </div>
+      {isAdmin && (
+        <button
+          type="button"
+          className="mt-6 flex items-center gap-1.5 text-sm text-loss/90 hover:text-loss"
+          onClick={async () => {
+            const sure = await confirm({
+              title: `Delete “${game.name}”?`,
+              message: 'All buy-ins, cash-outs, tips and expenses in this game will be deleted. The history log keeps a record.',
+              confirmLabel: 'Delete game',
+              danger: true,
+            })
+            if (sure && (await run(() => deleteGame(game.id), 'Game deleted'))) navigate('/')
+          }}
+        >
+          <Icon name="trash" className="size-4" /> Delete game (admin)
+        </button>
+      )}
+    </Sheet>
+  )
+}

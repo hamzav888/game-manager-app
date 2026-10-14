@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+@theme {
+  /* Warm graphite, like a dim card room. */
+  --color-bg: #0d0d0b;
+  --color-surface: #151512;
+  --color-surface-2: #1c1c18;
+  --color-line: #2a2a24;
+  --color-ink: #f3efe6;
+  --color-muted: #a5a194;
+  --color-faint: #6f6c62;
+
+  /* Brass: the brand accent (buttons, focus, active nav). */
+  --color-brass: #d6ae62;
+  --color-brass-strong: #c39947;
+  --color-brass-ink: #1a1306;
+
+  /* Felt: the live table. */
+  --color-felt: #1d5e46;
+  --color-felt-ink: #cfe9dc;
+
+  /* Money direction (text). */
+  --color-win: #67d49a;
+  --color-loss: #f2786d;
+  /* Brighter steps for text sitting on the green felt. */
+  --color-win-felt: #a8f0c8;
+  --color-loss-felt: #ffb2a6;
+  --color-warn: #e8b04b;
+
+  /* Chart marks (validated for colorblind separation on the surface). */
+  --color-win-mark: #25ad62;
+  --color-loss-mark: #bd3636;
+
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Instrument Serif", ui-serif, Georgia, serif;
+
+  --radius-card: 14px;
+}
+
+html {
+  color-scheme: dark;
+  background: var(--color-bg);
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(214, 174, 98, 0.35);
+}
+
+.font-display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------
+   The table: textured felt inside a leather rail with a brass
+   betting line, used for the hero numbers.
+   ------------------------------------------------------------------ */
+.table-felt {
+  position: relative;
+  isolation: isolate;
+  border: 7px solid transparent;
+  border-radius: 30px;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") padding-box,
+    radial-gradient(130% 120% at 50% 0%, #22694f 0%, #18543e 45%, #0f3a2b 100%) padding-box,
+    linear-gradient(180deg, #4a3423 0%, #2a1c12 45%, #1a110a 100%) border-box;
+  background-blend-mode: soft-light, normal, normal;
+  box-shadow:
+    0 1px 0 0 rgba(255, 220, 170, 0.12) inset,
+    0 18px 40px -18px rgba(0, 0, 0, 0.8),
+    0 0 0 1px #0b0805;
+}
+.table-felt::before {
+  /* inner vignette */
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 23px;
+  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: -1;
+}
+.table-felt::after {
+  /* the brass betting line */
+  content: '';
+  position: absolute;
+  inset: 9px;
+  border-radius: 16px;
+  border: 1px solid rgba(214, 174, 98, 0.32);
+  pointer-events: none;
+}
+.table-felt.is-closed {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") padding-box,
+    radial-gradient(130% 120% at 50% 0%, #2b2e29 0%, #20221e 50%, #171815 100%) padding-box,
+    linear-gradient(180deg, #3a3129 0%, #221c16 50%, #15110d 100%) border-box;
+  background-blend-mode: soft-light, normal, normal;
+}
+.table-felt.is-closed::after {
+  border-color: rgba(243, 239, 230, 0.12);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Hide scrollbars on horizontal pill rows. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes sheet-in {
+  from { transform: translateY(14px); }
+  to { transform: translateY(0); }
+}
+.animate-sheet { animation: sheet-in 170ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+
+@keyframes toast-in {
+  from { transform: translateY(-8px); }
+  to { transform: translateY(0); }
+}
+.animate-toast { animation: toast-in 160ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-sheet, .animate-toast { animation: none; }
+}

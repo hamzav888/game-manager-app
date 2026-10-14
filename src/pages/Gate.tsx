@@ -1,0 +1,233 @@
+import { useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
+import { useAuth } from '../auth'
+import { Icon } from '../components/Icon'
+import { Logo } from '../components/Layout'
+import { Button, Card, Field, Spinner, TextInput } from '../components/ui'
+import { googleEnabled, signInWithGoogle, signInWithPassword } from '../lib/authActions'
+import { SAMPLE_BASE } from '../lib/mode'
+
+/** Two fanned aces behind a stack of chips. */
+function HeroArt() {
+  const chip = (cy: number, fill: string, spot: string) => (
+    <g>
+      <path d={`M46 ${cy} v8 a34 9 0 0 0 68 0 v-8`} fill={fill} />
+      <path d={`M46 ${cy} v8 a34 9 0 0 0 68 0 v-8`} fill="#000" opacity="0.3" />
+      {[52, 66, 80, 94, 108].map((x) => (
+        <rect key={x} x={x - 2.5} y={cy + 3} width="5" height="6.5" rx="1" fill={spot} opacity="0.85" />
+      ))}
+      <ellipse cx="80" cy={cy} rx="34" ry="9" fill={fill} />
+      <ellipse cx="80" cy={cy} rx="27" ry="6.5" fill="none" stroke={spot} strokeWidth="2.4" strokeDasharray="6 5" opacity="0.9" />
+      <ellipse cx="80" cy={cy} rx="15" ry="3.6" fill="#000" opacity="0.18" />
+    </g>
+  )
+  return (
+    <svg viewBox="0 0 160 118" className="mx-auto h-32 w-auto drop-shadow-[0_12px_24px_rgba(0,0,0,0.45)]" aria-hidden="true">
+      <g transform="rotate(-13 62 46)">
+        <rect x="38" y="6" width="50" height="72" rx="7" fill="#f6f8f7" />
+        <text x="45" y="22" fontSize="13" fontWeight="700" fill="#111">A</text>
+        <path d="M63 30c-4 6-11 10-11 16 0 4 3 6 6 6 2 0 3-1 4-2-1 3-2 6-4 7h10c-2-1-3-4-4-7 1 1 2 2 4 2 3 0 6-2 6-6 0-6-7-10-11-16z" fill="#111" />
+      </g>
+      <g transform="rotate(11 98 44)">
+        <rect x="72" y="4" width="50" height="72" rx="7" fill="#ffffff" />
+        <text x="79" y="20" fontSize="13" fontWeight="700" fill="#d33">A</text>
+        <path d="M97 58c-1-1-13-8-13-17 0-4 3-7 7-7 3 0 5 1 6 3 1-2 3-3 6-3 4 0 7 3 7 7 0 9-12 16-13 17z" fill="#d33" />
+      </g>
+      {chip(98, '#1d1d1b', '#f3efe6')}
+      {chip(88, '#b8312f', '#f3efe6')}
+      {chip(78, '#d6ae62', '#1a1306')}
+    </svg>
+  )
+}
+
+function Shell({ children, compact }: { children: ReactNode; compact?: boolean }) {
+  return (
+    <div className="flex min-h-dvh items-center justify-center px-4 py-10">
+      <div className="w-full max-w-sm">
+        <div className="mb-5 flex items-center justify-center gap-2.5">
+          <Logo className="size-8" />
+          <span className="font-display text-[26px] leading-none">Poker Ledger</span>
+        </div>
+        {!compact && (
+          <section className="table-felt px-6 pb-7 pt-8 text-center text-felt-ink">
+            <HeroArt />
+            <h1 className="font-display mx-auto mt-5 max-w-[16rem] text-[34px] leading-[1.05] text-ink">The cage, in your pocket.</h1>
+            <p className="mx-auto mt-2 max-w-[17rem] text-sm opacity-75">
+              Buy-ins, cash-outs, tips and partner splits for the people who run the game.
+            </p>
+          </section>
+        )}
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function SampleLink() {
+  return (
+    <a href={SAMPLE_BASE} className="mt-5 flex items-center justify-center gap-1.5 text-sm text-brass transition-colors hover:text-ink">
+      Explore the sample with fake data <Icon name="next" className="size-4" />
+    </a>
+  )
+}
+
+function GoogleMark() {
+  return (
+    <svg viewBox="0 0 48 48" className="size-5" aria-hidden="true">
+      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
+      <path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
+      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z" />
+      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" />
+    </svg>
+  )
+}
+
+function Notice({ children, tone = 'info' }: { children: ReactNode; tone?: 'info' | 'error' }) {
+  return (
+    <div
+      className={
+        tone === 'error'
+          ? 'rounded-[12px] border border-loss/30 bg-loss/[0.07] px-3.5 py-2.5 text-sm text-loss'
+          : 'rounded-[12px] border border-brass/30 bg-brass/[0.07] px-3.5 py-2.5 text-sm text-brass'
+      }
+    >
+      {children}
+    </div>
+  )
+}
+
+export function LoginPage() {
+  const { notice } = useAuth()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) && password.length > 0
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!valid) return
+    setBusy(true)
+    setError(null)
+    try {
+      await signInWithPassword(email, password)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Shell>
+      <Card className="mt-6 p-5">
+        <h2 className="font-display text-[26px] leading-tight">Sign in</h2>
+        <form className="mt-4 space-y-3.5" onSubmit={submit}>
+          {notice && <Notice tone="error">{notice}</Notice>}
+          {error && <Notice tone="error">{error}</Notice>}
+          <Field label="Email">
+            <TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" autoCapitalize="none" required />
+          </Field>
+          <Field label="Password">
+            <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+          </Field>
+          <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy} disabled={!valid}>
+            Sign in
+          </Button>
+        </form>
+        <p className="mt-3 text-center text-sm text-muted">Need an account or a new password? Ask the person who runs the app.</p>
+
+        {googleEnabled && (
+          <>
+            <div className="my-4 flex items-center gap-3 text-xs text-faint">
+              <span className="h-px flex-1 bg-line" /> or <span className="h-px flex-1 bg-line" />
+            </div>
+            <Button size="lg" className="w-full font-medium" onClick={() => signInWithGoogle().catch((e) => setError(e instanceof Error ? e.message : String(e)))}>
+              <GoogleMark /> Continue with Google
+            </Button>
+          </>
+        )}
+      </Card>
+      <SampleLink />
+    </Shell>
+  )
+}
+
+/** Signed in, but not in any organization (and not the owner). */
+export function OnboardingPage() {
+  const { user, approved, orgs, refresh, signOut } = useAuth()
+  const paused = orgs.filter((o) => !o.active)
+  return (
+    <Shell compact>
+      <Card className="space-y-3 p-5">
+        <h1 className="font-display text-[30px] leading-[1.05]">{approved ? 'Almost there' : 'Waiting for approval'}</h1>
+        <p className="text-sm text-muted">
+          Signed in as <span className="text-ink">{user?.email}</span>.{' '}
+          {approved
+            ? 'Your account is ready, but you haven’t been added to an organization yet. Ask the app owner or your organization’s admin to add you.'
+            : 'The app owner needs to approve this account before it can be added to an organization.'}
+        </p>
+        {paused.length > 0 && (
+          <Notice tone="error">Your access to {paused.map((o) => o.name).join(', ')} is paused. Ask an admin there to restore it.</Notice>
+        )}
+        <div className="flex gap-3 pt-1">
+          <Button className="flex-1" onClick={() => void refresh()}>
+            Check again
+          </Button>
+          <Button className="flex-1" icon="logout" onClick={() => void signOut()}>
+            Sign out
+          </Button>
+        </div>
+      </Card>
+    </Shell>
+  )
+}
+
+export function ErrorPage({ error }: { error: string }) {
+  const { signOut } = useAuth()
+  return (
+    <Shell compact>
+      <Card className="space-y-4 p-5 text-center">
+        <p className="font-medium text-loss">Couldn’t reach the database</p>
+        <p className="text-sm text-muted">{error}</p>
+        <div className="flex gap-3">
+          <Button className="flex-1" onClick={() => window.location.reload()}>
+            Retry
+          </Button>
+          <Button className="flex-1" icon="logout" onClick={() => void signOut()}>
+            Sign out
+          </Button>
+        </div>
+      </Card>
+    </Shell>
+  )
+}
+
+export function SetupPage() {
+  return (
+    <Shell>
+      <Card className="mt-6 space-y-2.5 p-5 text-sm">
+        <p className="flex items-center gap-2 font-medium">
+          <Icon name="lock" className="size-4 text-warn" /> Connect Supabase to go live
+        </p>
+        <p className="text-muted">
+          Set <code className="text-ink">VITE_SUPABASE_URL</code> and <code className="text-ink">VITE_SUPABASE_ANON_KEY</code> (in{' '}
+          <code className="text-ink">.env.local</code>, or your host’s environment variables) and rebuild. SETUP.md walks through it.
+        </p>
+      </Card>
+      <a
+        href={SAMPLE_BASE}
+        className="mt-3 flex h-12 items-center justify-center gap-2 rounded-[10px] bg-brass font-semibold text-brass-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] transition-colors hover:bg-[#e2bd76]"
+      >
+        Explore the sample <Icon name="next" className="size-4" />
+      </a>
+    </Shell>
+  )
+}
+
+export function BootLoading() {
+  return (
+    <div className="flex min-h-dvh items-center justify-center gap-3 text-muted">
+      <Spinner /> Loading…
+    </div>
+  )
+}
