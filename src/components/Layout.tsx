@@ -17,19 +17,9 @@ const NAV: { to: string; label: string; icon: IconName }[] = [
   { to: '/org', label: 'Org', icon: 'sliders' },
 ]
 
-/** The brand mark: a brass-edged chip. */
-export function Logo({ className = 'size-7' }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 40 40" className={className} aria-hidden="true">
-      <circle cx="20" cy="20" r="19.5" fill="#8e6a2c" />
-      <circle cx="20" cy="20" r="18" fill="#d6ae62" />
-      {Array.from({ length: 8 }, (_, i) => (
-        <rect key={i} x="18" y="2.2" width="4" height="4.6" rx="1" fill="#1a1306" transform={`rotate(${i * 45} 20 20)`} />
-      ))}
-      <circle cx="20" cy="20" r="11.5" fill="#1a1306" />
-      <path d="M20 13.2c-2.1 3.1-5.6 5-5.6 8.2 0 2 1.6 3.3 3.2 3.3 1 0 1.7-.5 2.1-1-.3 1.6-.9 2.8-1.9 3.6h4.4c-1-.8-1.6-2-1.9-3.6.4.5 1.1 1 2.1 1 1.6 0 3.2-1.3 3.2-3.3 0-3.2-3.5-5.1-5.6-8.2z" fill="#d6ae62" />
-    </svg>
-  )
+/** The brand mark: fanned cards over the ledger (from branding/poker-ledger-logo.png). */
+export function Logo({ className = 'size-8' }: { className?: string }) {
+  return <img src="/brand/mark.webp" alt="" width={32} height={32} className={cx('object-contain', className)} draggable={false} />
 }
 
 function useResetSample() {
@@ -229,8 +219,8 @@ export function Layout() {
 
   return (
     <div className="min-h-dvh">
-      {isSample && <SampleBanner />}
-      <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-xl">
+      <header className="pt-safe sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-xl">
+        {isSample && <SampleBanner />}
         <div className="mx-auto flex h-14 max-w-3xl items-center gap-3 px-4">
           <NavLink to="/" className="flex min-w-0 items-center gap-2.5">
             <Logo />

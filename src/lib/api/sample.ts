@@ -58,6 +58,8 @@ function persist() {
     /* storage unavailable: keep working in memory */
   }
 }
+// Save the freshly seeded data too, so a reload keeps the same ids (and links).
+persist()
 
 /** Throw away every change and start over with the original sample data. */
 export function resetSample() {
@@ -101,7 +103,7 @@ function commit(...tables: string[]) {
 
 function assertOpen(gameId: string) {
   if (db.games.find((g) => g.id === gameId)?.status !== 'open')
-    fail('Not allowed. You may not have permission, or the game is closed.')
+    fail('Not allowed. You may not have permission, or the game has ended.')
 }
 
 function find<T extends { id: string }>(rows: T[], id: string): T {
@@ -332,17 +334,18 @@ function assertUniqueName(rows: { id: string; name: string }[], name: string, ex
 export async function createPlayer(name: string): Promise<Player> {
   await latency()
   assertUniqueName(db.players, name)
-  const p: Player = { id: sampleId(), name: name.trim(), phone: null, notes: null, created_at: now() }
+  const p: Player = { id: sampleId(), name: name.trim(), phone: null, notes: null, loss_discount_pct: null, created_at: now() }
   db.players.push(p)
   audit('players', 'INSERT', null, p)
   commit('players')
   return copy(p)
 }
 
-export async function updatePlayer(id: string, patch: Partial<Pick<Player, 'name' | 'phone' | 'notes'>>) {
+export async function updatePlayer(id: string, patch: Partial<Pick<Player, 'name' | 'phone' | 'notes' | 'loss_discount_pct'>>) {
   await latency()
   const p = find(db.players, id)
   if (patch.name !== undefined) assertUniqueName(db.players, patch.name, id)
+  validPct(patch.loss_discount_pct ?? undefined)
   const before = { ...p }
   Object.assign(p, patch)
   audit('players', 'UPDATE', before, p)
@@ -441,10 +444,19 @@ function totalsOf(g: Game): GameTotals {
   const buyIns = of('buy_in')
   const cashOuts = of('cash_out')
   const discounts = of('discount')
-  const tips = sum(db.dealer_tips.filter((t) => t.game_id === g.id).map((t) => t.amount))
+  const rounds = db.dealer_tips.filter((t) => t.game_id === g.id)
+  const tips = sum(rounds.map((t) => t.amount))
+  const rake = sum(rounds.map((t) => t.rake))
   const tipTax = Math.round((cents(tips) * g.tip_tax_pct) / 100) / 100
   const expenses = sum(db.expenses.filter((e) => e.game_id === g.id).map((e) => e.amount))
-  const house = (cents(buyIns) - cents(cashOuts) - cents(discounts) - cents(tips) + cents(tipTax)) / 100
+  // Same as the game_totals view: house take is before loss discounts (they're an expense).
+  const house = (cents(buyIns) - cents(cashOuts) - cents(tips) + cents(tipTax)) / 100
+  const lastIn = new Map<string, string>()
+  const lastOut = new Map<string, string>()
+  for (const t of txs) {
+    const m = t.kind === 'buy_in' ? lastIn : t.kind === 'cash_out' ? lastOut : null
+    if (m && (m.get(t.player_id) ?? '') < t.created_at) m.set(t.player_id, t.created_at)
+  }
   return {
     ...copy(g),
     total_buy_ins: buyIns,
@@ -455,7 +467,11 @@ function totalsOf(g: Game): GameTotals {
     tip_tax: tipTax,
     total_expenses: expenses,
     house_take: house,
-    net_profit: (cents(house) - cents(expenses)) / 100,
+    net_profit: (cents(house) - cents(discounts) - cents(expenses)) / 100,
+    total_rake: rake,
+    over_short: (cents(buyIns) - cents(cashOuts) - cents(tips) - cents(rake)) / 100,
+    seated_count: [...lastIn.entries()].filter(([pid, at]) => (lastOut.get(pid) ?? '') < at).length,
+    last_round_at: rounds.reduce<string | null>((m, t) => (!m || t.created_at > m ? t.created_at : m), null),
   }
 }
 
@@ -567,10 +583,17 @@ export async function deleteTx(id: string) {
   commit('transactions')
 }
 
+/** A dealer round needs tips or rake (or both), never negative. */
+function validRound(amount: number, rake: number) {
+  validAmount(amount, true)
+  validAmount(rake, true)
+  if (!(amount + rake > 0)) fail('Enter the rake or the tips for this round.')
+}
+
 export async function addTip(t: TipInput) {
   await latency()
   assertOpen(t.game_id)
-  validAmount(t.amount, false)
+  validRound(t.amount, t.rake)
   const row: DealerTip = { ...t, id: sampleId(), created_at: now(), updated_at: null }
   db.dealer_tips.push(row)
   audit('dealer_tips', 'INSERT', null, row)
@@ -581,7 +604,7 @@ export async function updateTip(id: string, patch: Partial<Omit<TipInput, 'game_
   await latency()
   const t = find(db.dealer_tips, id)
   assertOpen(t.game_id)
-  if (patch.amount !== undefined) validAmount(patch.amount, false)
+  validRound(patch.amount ?? t.amount, patch.rake ?? t.rake)
   const before = { ...t }
   Object.assign(t, patch, { updated_at: now() })
   audit('dealer_tips', 'UPDATE', before, t)

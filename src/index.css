@@ -118,6 +118,22 @@ body {
 .pb-safe {
   padding-bottom: env(safe-area-inset-bottom);
 }
+/* Home-screen app: the status bar floats over the page (black-translucent). */
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
+/* Feel like an app on phones: no tap delay or double-tap zoom. (Inputs are
+   16px or larger so iOS doesn't zoom in when one is focused.) */
+html {
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+@media (display-mode: standalone) {
+  body {
+    overscroll-behavior-y: none;
+  }
+}
 
 input[type='number']::-webkit-inner-spin-button,
 input[type='number']::-webkit-outer-spin-button {

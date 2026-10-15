@@ -571,7 +571,7 @@ export function AdminStandalone({ children }: { children?: ReactNode }) {
   const { signOut, user } = useAuth()
   return (
     <div className="min-h-dvh">
-      <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-xl">
+      <header className="pt-safe sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-xl">
         <div className="mx-auto flex h-14 max-w-3xl items-center gap-3 px-4">
           <Logo />
           <span className="font-display text-[22px] leading-none">Poker Ledger</span>

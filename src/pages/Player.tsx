@@ -18,6 +18,7 @@ import {
   IconButton,
   Loading,
   Money,
+  PercentInput,
   SectionTitle,
   Segmented,
   Sheet,
@@ -45,18 +46,74 @@ import { useLoader, useRealtime } from '../lib/hooks'
 import { playerLedger } from '../lib/ledger'
 import type { PlayerPayment, PlayerTotals } from '../lib/types'
 
+type DiscountMode = 'house' | 'custom' | 'none'
+const discountMode = (pct: number | null): DiscountMode => (pct === null ? 'house' : pct === 0 ? 'none' : 'custom')
+const pctLabel = (n: number) => `${Number.isInteger(n) ? n : Number(n.toFixed(2))}%`
+
+/** The player's loss discount: house rate, their own %, or none. */
+function DiscountFields({
+  mode,
+  pct,
+  houseRate,
+  onMode,
+  onPct,
+}: {
+  mode: DiscountMode
+  pct: string
+  houseRate: number
+  onMode: (m: DiscountMode) => void
+  onPct: (v: string) => void
+}) {
+  return (
+    <Field
+      label="Loss discount"
+      hint={
+        mode === 'house'
+          ? `Gets the game’s rate (house rule: ${pctLabel(houseRate)} of what they lose).`
+          : mode === 'none'
+            ? 'Never gets a loss discount, whatever the game’s rate.'
+            : 'Gets this % of their loss back at cash-out, in every game. Booked as an expense.'
+      }
+    >
+      <div className="space-y-2">
+        <Segmented
+          value={mode}
+          onChange={onMode}
+          options={[
+            { value: 'house', label: `House (${pctLabel(houseRate)})` },
+            { value: 'custom', label: 'Their own %' },
+            { value: 'none', label: 'None' },
+          ]}
+        />
+        {mode === 'custom' && <PercentInput value={pct} onChange={onPct} />}
+      </div>
+    </Field>
+  )
+}
+
 function EditPlayerSheet({ player, onClose, onSaved }: { player: PlayerTotals; onClose: () => void; onSaved: () => void }) {
-  const { isAdmin } = useAuth()
+  const { isAdmin, org } = useAuth()
   const { confirm } = useFeedback()
   const navigate = useNavigate()
   const { busy, run } = useAction()
   const [name, setName] = useState(player.name)
   const [phone, setPhone] = useState(player.phone ?? '')
   const [notes, setNotes] = useState(player.notes ?? '')
+  const [mode, setMode] = useState<DiscountMode>(discountMode(player.loss_discount_pct))
+  const [pct, setPct] = useState(player.loss_discount_pct ? String(player.loss_discount_pct) : '')
+  const pctN = Number(pct || 0)
+  const pctOk = mode !== 'custom' || (pct.trim() !== '' && Number.isFinite(pctN) && pctN > 0 && pctN <= 100)
+  const discount = mode === 'house' ? null : mode === 'none' ? 0 : pctN
 
   const save = async () => {
     const ok = await run(
-      () => updatePlayer(player.id, { name: name.trim(), phone: phone.trim() || null, notes: notes.trim() || null }),
+      () =>
+        updatePlayer(player.id, {
+          name: name.trim(),
+          phone: phone.trim() || null,
+          notes: notes.trim() || null,
+          loss_discount_pct: discount,
+        }),
       'Player updated',
     )
     if (ok) {
@@ -71,7 +128,7 @@ function EditPlayerSheet({ player, onClose, onSaved }: { player: PlayerTotals; o
       onClose={onClose}
       title="Edit player"
       footer={
-        <Button variant="primary" size="lg" className="w-full" disabled={!name.trim()} loading={busy} onClick={save}>
+        <Button variant="primary" size="lg" className="w-full" disabled={!name.trim() || !pctOk} loading={busy} onClick={save}>
           Save changes
         </Button>
       }
@@ -80,6 +137,7 @@ function EditPlayerSheet({ player, onClose, onSaved }: { player: PlayerTotals; o
         <Field label="Name">
           <TextInput value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
         </Field>
+        <DiscountFields mode={mode} pct={pct} houseRate={org?.loss_discount_pct ?? 0} onMode={setMode} onPct={setPct} />
         <Field label="Phone (optional)">
           <TextInput type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={30} />
         </Field>
@@ -166,6 +224,7 @@ type View = 'games' | 'ledger' | 'history'
 
 export function PlayerPage() {
   const { id = '' } = useParams()
+  const { org } = useAuth()
   const navigate = useNavigate()
   const { run } = useAction()
   const [view, setView] = useState<View>('games')
@@ -236,6 +295,7 @@ export function PlayerPage() {
 
   const owes = p.balance < -0.004
   const credit = p.balance > 0.004
+  const houseRate = org?.loss_discount_pct ?? 0
 
   return (
     <>
@@ -264,7 +324,7 @@ export function PlayerPage() {
         >
           {signedMoney(p.net)}
         </div>
-        <div className="mt-2 text-[12px] opacity-55">closed games only · includes loss discounts</div>
+        <div className="mt-2 text-[12px] opacity-55">ended games only · includes loss discounts</div>
         <div className="mt-5 grid grid-cols-3 gap-3 border-t border-white/10 pt-4 text-left">
           <Figure label="Games" value={p.games_played} />
           <Figure label="Bought in" value={money(p.total_buy_ins)} />
@@ -295,6 +355,26 @@ export function PlayerPage() {
         <Money value={Math.abs(p.balance)} className={cx('font-display text-[28px] leading-none', owes && 'text-loss', credit && 'text-brass')} />
       </button>
 
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="mt-3 flex w-full items-center gap-3 rounded-[14px] border border-line bg-surface px-4 py-3 text-left transition-colors hover:border-[#3a3a33]"
+      >
+        <Icon name="percent" className={cx('size-5', p.loss_discount_pct === 0 ? 'text-muted' : 'text-brass')} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] text-muted">
+            Loss discount · {p.loss_discount_pct === null ? 'house rate' : p.loss_discount_pct === 0 ? 'turned off' : 'their own rate'}
+          </span>
+          <span className="block truncate font-medium">
+            {p.loss_discount_pct === 0 ? 'None' : `${pctLabel(p.loss_discount_pct ?? houseRate)} back on losses`}
+          </span>
+        </span>
+        <span className="shrink-0 text-right">
+          <Money value={p.total_discounts} className="block font-display text-[22px] leading-none text-brass" />
+          <span className="text-[11px] text-faint">given so far</span>
+        </span>
+      </button>
+
       <div className="mt-5">
         <Tabs
           value={view}
@@ -313,7 +393,7 @@ export function PlayerPage() {
             <>
               <SectionTitle action={<WinLossLegend />}>Result by night</SectionTitle>
               <Card className="px-3 pb-2 pt-3">
-                <DivergingColumns data={chart} label={`${p.name}'s result in each closed game`} height={170} />
+                <DivergingColumns data={chart} label={`${p.name}'s result in each ended game`} height={170} />
               </Card>
             </>
           )}

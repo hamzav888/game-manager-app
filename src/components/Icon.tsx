@@ -92,6 +92,20 @@ const ICONS = {
   ),
   arrowDown: <path d="M12 5v14M19 12l-7 7-7-7" />,
   arrowUp: <path d="M12 19V5M5 12l7-7 7 7" />,
+  chip: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
+    </>
+  ),
+  flag: <path d="M5 22V4M5 4h12l-2.5 4.5L17 13H5" />,
+  table: (
+    <>
+      <rect x="2.5" y="6" width="19" height="12" rx="6" />
+      <rect x="6" y="9" width="12" height="6" rx="3" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>
 
 export type IconName = keyof typeof ICONS

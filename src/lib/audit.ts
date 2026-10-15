@@ -28,6 +28,7 @@ const amt = (v: unknown) => money(Number(v ?? 0))
 
 const FIELD_LABELS: Record<string, string> = {
   amount: 'Amount',
+  rake: 'Rake',
   method: 'Method',
   note: 'Note',
   dealer_name: 'Dealer',
@@ -64,13 +65,13 @@ const KIND_LABELS: Record<string, string> = {
 // Which fields to show (in order) for a whole record.
 const RECORD_FIELDS: Record<string, string[]> = {
   transactions: ['kind', 'amount', 'method', 'note'],
-  dealer_tips: ['dealer_name', 'amount', 'note'],
+  dealer_tips: ['dealer_name', 'rake', 'amount', 'note'],
   expenses: ['category', 'description', 'amount', 'paid_by'],
   player_payments: ['direction', 'amount', 'method', 'note'],
   partner_entries: ['kind', 'amount', 'method', 'note'],
   partner_shares: ['share_pct', 'game_profit', 'amount'],
   games: ['name', 'game_date', 'status', 'tip_tax_pct', 'loss_discount_pct', 'notes'],
-  players: ['name', 'phone', 'notes'],
+  players: ['name', 'phone', 'loss_discount_pct', 'notes'],
   partners: ['name', 'share_pct', 'email', 'notes'],
   organizations: ['name', 'tip_tax_pct', 'loss_discount_pct'],
   memberships: ['role', 'active'],
@@ -81,8 +82,15 @@ const IGNORED = new Set([
   'org_id', 'user_id', 'org_name', 'token', 'accepted_by', 'accepted_at',
 ])
 
-function fieldValue(key: string, v: unknown): string {
-  if (key === 'amount') return amt(v)
+/** Per-table names for a field, where the generic one would mislead. */
+const TABLE_LABELS: Record<string, Record<string, string>> = {
+  dealer_tips: { amount: 'Tips' },
+}
+const labelFor = (table: string, key: string) => TABLE_LABELS[table]?.[key] ?? FIELD_LABELS[key] ?? key
+
+function fieldValue(key: string, v: unknown, table?: string): string {
+  if (key === 'amount' || key === 'rake') return amt(v)
+  if (key === 'loss_discount_pct' && table === 'players') return v === null || v === undefined ? 'House rate' : Number(v) === 0 ? 'None' : `${Number(v)}%`
   if (key === 'method') return methodLabel(str(v))
   if (key === 'category') return categoryLabel(str(v))
   if (key === 'active') return v ? 'Yes' : 'No'
@@ -90,21 +98,21 @@ function fieldValue(key: string, v: unknown): string {
   if (key === 'kind') return KIND_LABELS[String(v)] ?? str(v)
   if (key === 'direction') return v === 'from_player' ? 'Player paid us' : 'We paid the player'
   if (key === 'game_profit') return signedMoney(Number(v ?? 0))
-  if (key === 'status') return v === 'closed' ? 'Closed' : 'Open'
+  if (key === 'status') return v === 'closed' ? 'Ended' : 'Open'
   if (key === 'role') return v === 'admin' ? 'Admin' : 'Organizer'
   if (key === 'expires_at') return new Date(String(v)).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
   return str(v)
 }
 
-function diff(oldRow: Row | null, newRow: Row | null): string[] {
+function diff(table: string, oldRow: Row | null, newRow: Row | null): string[] {
   if (!oldRow || !newRow) return []
   const out: string[] = []
   for (const key of Object.keys(newRow)) {
     if (IGNORED.has(key)) continue
     const a = oldRow[key]
     const b = newRow[key]
-    if (JSON.stringify(a) === JSON.stringify(b)) continue
-    out.push(`${FIELD_LABELS[key] ?? key}: ${fieldValue(key, a)} → ${fieldValue(key, b)}`)
+    if (JSON.stringify(a ?? null) === JSON.stringify(b ?? null)) continue
+    out.push(`${labelFor(table, key)}: ${fieldValue(key, a, table)} → ${fieldValue(key, b, table)}`)
   }
   return out
 }
@@ -113,14 +121,15 @@ export function describeAudit(e: AuditEntry, ctx: AuditContext): DescribedAudit 
   const row = (e.new_data ?? e.old_data ?? {}) as Row
   const actor = ctx.actorName(e.actor_email)
   const tone: DescribedAudit['tone'] = e.action === 'INSERT' ? 'add' : e.action === 'UPDATE' ? 'edit' : 'delete'
-  const changes = e.action === 'UPDATE' ? diff(e.old_data, e.new_data) : []
+  const changes = e.action === 'UPDATE' ? diff(e.table_name, e.old_data, e.new_data) : []
   const player = ctx.playerName(e.player_id) ?? 'a player'
   const details: DescribedAudit['details'] = []
   if (e.action !== 'UPDATE') {
     for (const key of RECORD_FIELDS[e.table_name] ?? []) {
       const v = row[key]
       if (v === null || v === undefined || v === '') continue
-      details.push({ label: key === 'kind' || key === 'direction' ? 'Type' : (FIELD_LABELS[key] ?? key), value: fieldValue(key, v) })
+      if (e.table_name === 'dealer_tips' && (key === 'rake' || key === 'amount') && Number(v) === 0) continue
+      details.push({ label: key === 'kind' || key === 'direction' ? 'Type' : labelFor(e.table_name, key), value: fieldValue(key, v, e.table_name) })
     }
   }
   const gameName = e.table_name !== 'games' ? ctx.gameName?.(e.game_id) : null
@@ -151,14 +160,18 @@ export function describeAudit(e: AuditEntry, ctx: AuditContext): DescribedAudit 
       }
       break
     }
-    case 'dealer_tips':
+    case 'dealer_tips': {
+      const parts = [Number(row.rake ?? 0) > 0 && `rake ${amt(row.rake)}`, Number(row.amount ?? 0) > 0 && `tips ${amt(row.amount)}`]
+        .filter(Boolean)
+        .join(', ')
       summary =
         e.action === 'INSERT'
-          ? `Dealer tip ${amt(row.amount)} for ${str(row.dealer_name)}`
+          ? `${str(row.dealer_name)}’s round: ${parts}`
           : e.action === 'UPDATE'
-            ? `Edited dealer tip for ${str(row.dealer_name)}`
-            : `Deleted dealer tip ${amt(row.amount)} for ${str(row.dealer_name)}`
+            ? `Edited ${str(row.dealer_name)}’s round`
+            : `Deleted ${str(row.dealer_name)}’s round (${parts})`
       break
+    }
     case 'expenses': {
       const label = `${categoryLabel(str(row.category))}${row.description ? ` (${row.description})` : ''}`
       summary =
@@ -174,7 +187,7 @@ export function describeAudit(e: AuditEntry, ctx: AuditContext): DescribedAudit 
       if (e.action === 'INSERT') summary = `Started game “${name}”`
       else if (e.action === 'DELETE') summary = `Deleted game “${name}”`
       else if (e.old_data?.status !== e.new_data?.status)
-        summary = e.new_data?.status === 'closed' ? `Closed game “${name}”` : `Reopened game “${name}”`
+        summary = e.new_data?.status === 'closed' ? `Ended game “${name}”` : `Reopened game “${name}”`
       else summary = `Edited game “${name}”`
       break
     }

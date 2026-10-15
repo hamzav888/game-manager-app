@@ -108,7 +108,14 @@ export function PlayersPage() {
               <Link key={p.id} to={`/players/${p.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2/60">
                 <Avatar name={p.name} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">{p.name}</div>
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium">{p.name}</span>
+                    {p.loss_discount_pct !== null && (
+                      <span className="shrink-0 rounded border border-brass/30 px-1 text-[10px] font-medium text-brass">
+                        {p.loss_discount_pct === 0 ? 'NO DISC.' : `${p.loss_discount_pct}% DISC.`}
+                      </span>
+                    )}
+                  </div>
                   <div className="truncate text-[13px] text-muted">
                     {p.games_played} game{p.games_played === 1 ? '' : 's'}
                     {p.last_played && ` · last ${shortDate(p.last_played)}`}

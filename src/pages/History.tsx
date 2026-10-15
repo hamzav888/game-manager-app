@@ -9,11 +9,11 @@ import type { AuditTable } from '../lib/types'
 const TYPES: { value: '' | AuditTable; label: string }[] = [
   { value: '', label: 'Everything' },
   { value: 'transactions', label: 'Buy-ins, cash-outs & discounts' },
-  { value: 'dealer_tips', label: 'Dealer tips' },
+  { value: 'dealer_tips', label: 'Dealer rounds (rake & tips)' },
   { value: 'expenses', label: 'Expenses' },
   { value: 'player_payments', label: 'Player payments' },
   { value: 'partner_entries', label: 'Partner payouts' },
-  { value: 'games', label: 'Games' },
+  { value: 'games', label: 'Games (started, ended)' },
   { value: 'players', label: 'Players' },
   { value: 'partners', label: 'Partners' },
   { value: 'partner_shares', label: 'Profit shares' },
@@ -52,7 +52,7 @@ export function HistoryPage() {
       <PageHeader title="History" sub="Every action, to the second. Can’t be edited or deleted." />
 
       <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <select className={cx(inputCls, 'h-10 text-sm')} value={actor} onChange={(e) => setActor(e.target.value)} aria-label="Done by">
+        <select className={cx(inputCls, 'h-10 text-base sm:text-sm')} value={actor} onChange={(e) => setActor(e.target.value)} aria-label="Done by">
           <option value="">Everyone</option>
           {members
             .filter((m) => m.email)
@@ -63,7 +63,7 @@ export function HistoryPage() {
             ))}
         </select>
         <select
-          className={cx(inputCls, 'h-10 text-sm')}
+          className={cx(inputCls, 'h-10 text-base sm:text-sm')}
           value={table}
           onChange={(e) => setTable(e.target.value as '' | AuditTable)}
           aria-label="Type"
@@ -74,7 +74,7 @@ export function HistoryPage() {
             </option>
           ))}
         </select>
-        <select className={cx(inputCls, 'h-10 text-sm')} value={playerId} onChange={(e) => setPlayerId(e.target.value)} aria-label="Player">
+        <select className={cx(inputCls, 'h-10 text-base sm:text-sm')} value={playerId} onChange={(e) => setPlayerId(e.target.value)} aria-label="Player">
           <option value="">All players</option>
           {(roster.data ?? []).map((p) => (
             <option key={p.id} value={p.id}>
@@ -82,7 +82,7 @@ export function HistoryPage() {
             </option>
           ))}
         </select>
-        <select className={cx(inputCls, 'h-10 text-sm')} value={partnerId} onChange={(e) => setPartnerId(e.target.value)} aria-label="Partner">
+        <select className={cx(inputCls, 'h-10 text-base sm:text-sm')} value={partnerId} onChange={(e) => setPartnerId(e.target.value)} aria-label="Partner">
           <option value="">All partners</option>
           {(partners.data ?? []).map((p) => (
             <option key={p.id} value={p.id}>

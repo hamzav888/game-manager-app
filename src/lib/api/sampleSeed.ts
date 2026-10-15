@@ -1,6 +1,7 @@
 // Realistic fake data for the /sample demo: a regular crew, three partners,
-// ~12 closed nights and one game in progress right now. Deterministic, so
-// every visit shows the same story.
+// ~12 closed nights and two tables running right now. Dealers report rake and
+// tips at the end of every round. Deterministic, so every visit shows the
+// same story.
 import type {
   AuditEntry,
   DealerTip,
@@ -51,7 +52,7 @@ export interface SampleDb {
   nextAuditId: number
 }
 
-export const SAMPLE_VERSION = 8
+export const SAMPLE_VERSION = 9
 
 let idSeq = 0
 export const sampleId = () => `s-${Date.now().toString(36)}-${(idSeq++).toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -217,11 +218,15 @@ export function seedSample(): SampleDb {
   // ------------------------------------------------ players
   for (const name of PLAYER_NAMES) {
     const created = localDate(150 - Math.floor(r() * 30)).toISOString()
-    const p: Player = { id: sampleId(), name, phone: null, notes: null, created_at: created }
+    const p: Player = { id: sampleId(), name, phone: null, notes: null, loss_discount_pct: null, created_at: created }
     db.players.push(p)
     log('players', 'INSERT', null, p, SAMPLE_EMAIL, created)
   }
-  db.players.find((p) => p.name === 'Big Rob')!.notes = 'Plays on account. Settles by transfer on Mondays.'
+  db.players.find((p) => p.name === 'Big Rob')!.notes = 'Plays on account. Settles by transfer on Mondays. Gets 15% back on losses.'
+  db.players.find((p) => p.name === 'Big Rob')!.loss_discount_pct = 15
+  db.players.find((p) => p.name === 'Hector')!.loss_discount_pct = 0
+  db.players.find((p) => p.name === 'Hector')!.notes = 'Asked not to get the loss discount.'
+  const rateOf = (p: Player) => p.loss_discount_pct ?? LOSS_DISCOUNT
   db.players.find((p) => p.name === 'Lena')!.phone = '(555) 014-2290'
   const onAccount = new Set(['Big Rob', 'Tariq'].map((n) => db.players.find((p) => p.name === n)!.id))
 
@@ -231,8 +236,8 @@ export function seedSample(): SampleDb {
     log('transactions', 'INSERT', null, t, actor(), when)
     return t
   }
-  const addTip = (g: Game, dealer: string, amount: number, when: string) => {
-    const t: DealerTip = { id: sampleId(), game_id: g.id, dealer_name: dealer, amount, note: null, created_at: when, updated_at: null }
+  const addRound = (g: Game, dealer: string, rake: number, amount: number, when: string, note: string | null = null) => {
+    const t: DealerTip = { id: sampleId(), game_id: g.id, dealer_name: dealer, amount, rake, note, created_at: when, updated_at: null }
     db.dealer_tips.push(t)
     log('dealer_tips', 'INSERT', null, t, actor(), when)
   }
@@ -312,12 +317,26 @@ export function seedSample(): SampleDb {
       // Credit players run a tab: their cash-outs are netted against it too.
       const m: PayMethod = onAccount.has(p.id) ? 'account' : r() < 0.7 ? 'cash' : 'transfer'
       addTx(g, p, 'cash_out', outs[i], when, m)
-      if (loss > 0) addTx(g, p, 'discount', Math.round((loss * LOSS_DISCOUNT) / 100), when, m === 'account' ? 'account' : 'cash')
+      const disc = Math.round((loss * rateOf(p)) / 100)
+      if (loss > 0 && disc > 0) addTx(g, p, 'discount', disc, when, m === 'account' ? 'account' : 'cash')
     })
 
-    const tipA = round5(tips * between(0.4, 0.6))
-    addTip(g, pick(DEALERS), tipA, at(day, 150))
-    if (tips - tipA > 0) addTip(g, pick(DEALERS), tips - tipA, at(day, 280))
+    // The dealer reports rake and tips at the end of every round. Rake varies
+    // with the action; one night the reported rake came up $20 short of the chips.
+    const roundCount = 6 + Math.floor(r() * 3)
+    const split = (total: number) => {
+      const w = Array.from({ length: roundCount }, () => 0.6 + r())
+      const ws = w.reduce((a, b) => a + b, 0)
+      const parts = w.map((x) => round5((total * x) / ws))
+      parts[parts.length - 1] += total - parts.reduce((a, b) => a + b, 0)
+      return parts
+    }
+    const rakes = split(daysAgo === 19 ? rake + 20 : rake)
+    const tipParts = split(tips)
+    const first = Math.floor(r() * DEALERS.length)
+    for (let k = 0; k < roundCount; k++) {
+      addRound(g, DEALERS[(first + k) % DEALERS.length], rakes[k], Math.max(0, tipParts[k]), at(day, 40 + k * 40 + Math.floor(r() * 8)))
+    }
 
     addExpense(g, 'food', round5(between(70, 190)), pick(['Sam', 'Jordan', 'Priya']), pick(['Pizza', 'Wings & fries', 'Shawarma platters', 'Tacos']), at(day, 30))
     if (r() < 0.5) addExpense(g, 'drinks', round5(between(35, 90)), null, 'Drinks & ice', at(day, 45))
@@ -350,13 +369,15 @@ export function seedSample(): SampleDb {
       pay(db.players.find((p) => p.id === pid)!, 'from_player', amount, afternoon(i ? 9 : 30, 13 * 60 + 8 + i * 41), i ? 'Partial payment' : 'E-transfer')
   }
 
-  // A correction on a past night, so the history shows an edit.
+  // A correction on a past night, so the history shows an edit: a $1,000
+  // buy-in was first typed as $500, then fixed (the chips balance either way).
   const fix = db.transactions.find((t) => t.kind === 'buy_in' && t.amount === 1000)
   if (fix) {
-    const old = { ...fix }
-    fix.amount = 500
+    const typo = { ...fix, amount: 500 }
+    const inserted = events.find((e) => e.table_name === 'transactions' && e.action === 'INSERT' && e.record_id === fix.id)
+    if (inserted) inserted.new_data = { ...typo }
     fix.updated_at = new Date(new Date(fix.created_at).getTime() + 20 * 60000).toISOString()
-    log('transactions', 'UPDATE', old, { ...fix }, 'jordan@example.com', fix.updated_at)
+    log('transactions', 'UPDATE', typo, { ...fix }, 'jordan@example.com', fix.updated_at)
   }
 
   // ------------------------------------------------ tonight (live)
@@ -400,10 +421,40 @@ export function seedSample(): SampleDb {
       if (loss > 0) addTx(live, p, 'discount', Math.round((loss * LOSS_DISCOUNT) / 100), ago(48 - i * 3))
     }
   })
-  addTip(live, 'Marco', 45, ago(95))
-  addTip(live, 'Lucy', 30, ago(25))
+  addRound(live, 'Marco', 95, 25, ago(158))
+  addRound(live, 'Lucy', 120, 30, ago(117))
+  addRound(live, 'Andre', 85, 15, ago(76))
+  addRound(live, 'Marco', 140, 35, ago(35), 'Big pot with Omar and Tariq')
   addExpense(live, 'food', 145, 'Jordan', 'Wings & fries', ago(150))
   addExpense(live, 'drinks', 40, null, 'Ice & mixers', ago(120))
+
+  // A second table running at the same time.
+  const side: Game = {
+    id: sampleId(),
+    name: 'Side table · $2/$5',
+    game_date: isoDate(today),
+    status: 'open',
+    notes: 'Higher stakes, overflow from the main game.',
+    created_at: ago(95),
+    closed_at: null,
+    tip_tax_pct: TIP_TAX,
+    loss_discount_pct: LOSS_DISCOUNT,
+  }
+  db.games.push(side)
+  log('games', 'INSERT', null, side, 'priya@example.com', side.created_at)
+  const sidePlan: [string, number[], number | null][] = [
+    ['Mike R.', [2000], null],
+    ['Nadia', [1000, 1000], null],
+    ['Bilal', [2000], null],
+    ['Hector', [1000], 0],
+    ['Marcus', [2000], null],
+  ]
+  sidePlan.forEach(([name, buys, out], i) => {
+    const p = P(name)
+    buys.forEach((b, j) => addTx(side, p, 'buy_in', b, ago(90 - i * 3 - j * 40)))
+    if (out !== null) addTx(side, p, 'cash_out', out, ago(20))
+  })
+  addRound(side, 'Andre', 160, 40, ago(52))
 
   // ------------------------------------------------ finalize audit log in time order
   events.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at))

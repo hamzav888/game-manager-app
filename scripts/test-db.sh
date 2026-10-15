@@ -16,6 +16,10 @@ create database $DB;
 SQL
 psql -v ON_ERROR_STOP=1 -q -d "$DB" -f supabase/tests/00_supabase_stubs.sql 2>&1 | grep -v -i 'wal_level\|hint' || true
 for f in supabase/migrations/*.sql; do psql -v ON_ERROR_STOP=1 -q -d "$DB" -f "$f"; done
-out=$(psql -v ON_ERROR_STOP=1 -q -d "$DB" -f supabase/tests/10_security.sql 2>&1) || { echo "$out" | grep -E 'FAIL|ERROR'; exit 1; }
-echo "$out" | grep -c 'PASS' | xargs -I{} echo "{} security checks passed"
+total=0
+for f in supabase/tests/[1-9]*.sql; do
+  out=$(psql -v ON_ERROR_STOP=1 -q -d "$DB" -f "$f" 2>&1) || { echo "$f:"; echo "$out" | grep -E 'FAIL|ERROR'; exit 1; }
+  total=$((total + $(echo "$out" | grep -c 'PASS')))
+done
+echo "$total database checks passed"
 psql -q -d postgres -c "drop database $DB"

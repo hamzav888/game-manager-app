@@ -95,7 +95,7 @@ function PartnerSheet({ existing, onClose, onSaved }: { existing?: PartnerAccoun
         <Field label="Name">
           <TextInput value={name} onChange={(e) => setName(e.target.value)} maxLength={60} autoFocus={!existing} />
         </Field>
-        <Field label="Profit share" hint="Their cut of each closed game’s net profit. Shares should add up to 100%.">
+        <Field label="Profit share" hint="Their cut of each ended game’s net profit. Shares should add up to 100%.">
           <PercentInput value={share} onChange={setShare} />
         </Field>
         <Field label="Email (optional)" hint="Their login email, if they’re also a member of this organization.">
@@ -377,7 +377,7 @@ export function PartnerPage() {
             onDelete={isAdmin ? (row) => run(() => deletePartnerEntry(row.id), 'Entry deleted').then((ok) => (reloadAll(), ok)) : undefined}
           />
           <p className="mt-1 px-1 text-xs leading-relaxed text-faint">
-            Profit shares are posted at {p.name}’s share % when each game is closed, so changing the % later never rewrites the past.
+            Profit shares are posted at {p.name}’s share % when each game ends, so changing the % later never rewrites the past.
           </p>
         </div>
       )}

@@ -151,7 +151,7 @@ export function partnerLedger(
       gameId: s.game_id,
       stamp: stamps?.get(s.id),
       title: s.amount >= 0 ? 'Profit share' : 'Share of a losing night',
-      details: clean([gameLabel(s.game_name, s.game_date), `${s.share_pct}% of ${signedMoney(s.game_profit)} net profit`, 'Posted when the game was closed']),
+      details: clean([gameLabel(s.game_name, s.game_date), `${s.share_pct}% of ${signedMoney(s.game_profit)} net profit`, 'Posted when the game ended']),
       owedToThem: Math.max(0, s.amount),
       theyOwe: Math.max(0, -s.amount),
       ourPayment: 0,

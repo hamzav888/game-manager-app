@@ -261,7 +261,7 @@ export function Figure({ label, value, className }: { label: ReactNode; value: R
 // ---------------------------------------------------------------- Form fields
 
 export const inputCls =
-  'w-full h-11 rounded-[10px] border border-line bg-bg px-3 text-[15px] text-ink placeholder:text-faint outline-none transition-colors focus:border-brass/70 focus:bg-[#11110f]'
+  'w-full h-11 rounded-[10px] border border-line bg-bg px-3 text-[16px] text-ink placeholder:text-faint outline-none transition-colors focus:border-brass/70 focus:bg-[#11110f]'
 
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
@@ -488,7 +488,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
   return (
     <FeedbackCtx.Provider value={{ toast, confirm }}>
       {children}
-      <div className="pointer-events-none fixed inset-x-0 top-3 z-[60] flex flex-col items-center gap-2 px-4">
+      <div className="pt-safe pointer-events-none fixed inset-x-0 top-3 z-[60] flex flex-col items-center gap-2 px-4">
         {toasts.map((t) => (
           <div
             key={t.id}

@@ -34,7 +34,7 @@ const PAGE = 1000
 function friendly(error: PostgrestError): Error {
   if (error.code === '23505') return new Error('That already exists — names must be unique.')
   if (error.code === '23503') return new Error('This is still in use (it has buy-ins or cash-outs), so it cannot be deleted.')
-  if (error.code === '42501') return new Error('Not allowed. You may not have permission, or the game is closed.')
+  if (error.code === '42501') return new Error('Not allowed. You may not have permission, or the game has ended.')
   if (error.code === 'PGRST301' || error.message?.includes('JWT')) return new Error('Your session expired. Sign in again.')
   if (error.code === '23514') return new Error('Invalid value — check the amount and fields.')
   if (error.code === 'P0001') return new Error(error.message)
@@ -51,7 +51,7 @@ async function run<T>(q: PromiseLike<{ data: T | null; error: PostgrestError | n
 async function runChanged(q: PromiseLike<{ data: unknown[] | null; error: PostgrestError | null }>): Promise<void> {
   const rows = await run(q)
   if (!rows || rows.length === 0) {
-    throw new Error('Change not saved — you may not have permission, or the game is closed.')
+    throw new Error('Change not saved — you may not have permission, or the game has ended.')
   }
 }
 
@@ -72,6 +72,10 @@ const num = <T extends object>(row: T, keys: (keyof T)[]): T => {
   for (const k of keys) (r as Record<keyof T, unknown>)[k] = Number(r[k] ?? 0)
   return r
 }
+
+/** null stays null (e.g. "use the game's rate"). */
+const pctOrNull = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v))
+const toPlayer = <T extends Player>(p: T): T => ({ ...p, loss_discount_pct: pctOrNull(p.loss_discount_pct) })
 
 // ---------------------------------------------------------------- organizations & members
 
@@ -184,13 +188,13 @@ export const adminRenameOrganization = (org: string, name: string) =>
 
 // ---------------------------------------------------------------- players
 
-export const listPlayers = () =>
-  fetchAll<Player>((a, b) => supabase.from('players').select('*').eq('org_id', orgId()).order('name').range(a, b))
+export const listPlayers = async () =>
+  (await fetchAll<Player>((a, b) => supabase.from('players').select('*').eq('org_id', orgId()).order('name').range(a, b))).map(toPlayer)
 
-export const createPlayer = (name: string) =>
-  run(supabase.from('players').insert({ org_id: orgId(), name: name.trim() }).select('*').single<Player>())
+export const createPlayer = async (name: string) =>
+  toPlayer(await run(supabase.from('players').insert({ org_id: orgId(), name: name.trim() }).select('*').single<Player>()))
 
-export const updatePlayer = (id: string, patch: Partial<Pick<Player, 'name' | 'phone' | 'notes'>>) =>
+export const updatePlayer = (id: string, patch: Partial<Pick<Player, 'name' | 'phone' | 'notes' | 'loss_discount_pct'>>) =>
   runChanged(supabase.from('players').update(patch).eq('id', id).select('id'))
 
 export const deletePlayer = (id: string) =>
@@ -200,12 +204,12 @@ const PLAYER_TOTAL_NUMS: (keyof PlayerTotals)[] = ['games_played', 'total_buy_in
 
 export const listPlayerTotals = async () =>
   (await fetchAll<PlayerTotals>((a, b) => supabase.from('player_totals').select('*').eq('org_id', orgId()).order('name').range(a, b))).map((r) =>
-    num(r, PLAYER_TOTAL_NUMS),
+    toPlayer(num(r, PLAYER_TOTAL_NUMS)),
   )
 
 export const getPlayerTotals = async (id: string): Promise<PlayerTotals | null> => {
   const r: PlayerTotals | null = await run(supabase.from('player_totals').select('*').eq('id', id).maybeSingle<PlayerTotals>())
-  return r && num(r, PLAYER_TOTAL_NUMS)
+  return r && toPlayer(num(r, PLAYER_TOTAL_NUMS))
 }
 
 export const getPlayerResults = async (playerId: string) =>
@@ -246,6 +250,9 @@ export const listGameTotals = async () =>
       'total_expenses',
       'house_take',
       'net_profit',
+      'total_rake',
+      'over_short',
+      'seated_count',
     ]),
   )
 
@@ -274,7 +281,7 @@ export async function getGameData(gameId: string): Promise<GameData> {
   return {
     game: game && num(game, ['tip_tax_pct', 'loss_discount_pct']),
     txs: txs.map((t) => num(t, ['amount'])),
-    tips: tips.map((t) => num(t, ['amount'])),
+    tips: tips.map((t) => num(t, ['amount', 'rake'])),
     expenses: expenses.map((e) => num(e, ['amount'])),
   }
 }
@@ -289,7 +296,8 @@ export const updateTx = (id: string, patch: Partial<Pick<Transaction, 'amount' |
   runChanged(supabase.from('transactions').update(patch).eq('id', id).select('id'))
 export const deleteTx = (id: string) => runChanged(supabase.from('transactions').delete().eq('id', id).select('id'))
 
-export type TipInput = Pick<DealerTip, 'game_id' | 'dealer_name' | 'amount' | 'note'>
+/** One dealer round: tips and rake (either can be 0, not both). */
+export type TipInput = Pick<DealerTip, 'game_id' | 'dealer_name' | 'amount' | 'rake' | 'note'>
 export const addTip = async (t: TipInput) => {
   await run(supabase.from('dealer_tips').insert(t))
 }

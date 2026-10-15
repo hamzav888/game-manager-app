@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { lossDiscountDue, splitProfit, summarizeGame, summarizePlayer } from './accounting'
+import { discountRateFor, lossDiscountDue, splitProfit, summarizeGame, summarizePlayer } from './accounting'
 import type { DealerTip, Expense, Player, Transaction } from './types'
 
 let seq = 0
@@ -16,14 +16,14 @@ const tx = (player_id: string, kind: Transaction['kind'], amount: number, method
   created_at: at(),
   updated_at: null,
 })
-const tip = (dealer_name: string, amount: number): DealerTip => ({
-  id: `d${seq}`, game_id: 'g', dealer_name, amount, note: null, created_at: at(), updated_at: null,
+const tip = (dealer_name: string, amount: number, rake = 0): DealerTip => ({
+  id: `d${seq}`, game_id: 'g', dealer_name, amount, rake, note: null, created_at: at(), updated_at: null,
 })
 const exp = (amount: number, paid_by: string, category: Expense['category'] = 'food'): Expense => ({
   id: `e${seq}`, game_id: 'g', category, description: null, amount, partner_id: null, paid_by, created_at: at(), updated_at: null,
 })
 const players = new Map<string, Player>(
-  ['ali', 'bob', 'cat'].map((id) => [id, { id, name: id.toUpperCase(), phone: null, notes: null, created_at: '' }]),
+  ['ali', 'bob', 'cat'].map((id) => [id, { id, name: id.toUpperCase(), phone: null, notes: null, loss_discount_pct: null, created_at: '' }]),
 )
 
 describe('summarizePlayer', () => {
@@ -66,7 +66,10 @@ describe('summarizeGame', () => {
     const net = Object.fromEntries(s.players.map((p) => [p.playerId, p.net]))
     expect(net).toEqual({ ali: 800, bob: -1000, cat: -100 })
 
-    expect(s.tipsByDealer).toEqual([{ name: 'Joe', amount: 100, count: 2, tax: 0, net: 100 }])
+    expect(s.dealers).toEqual([{ name: 'Joe', amount: 100, count: 2, rounds: 2, rake: 0, tax: 0, net: 100 }])
+    expect(s.rakeReported).toBe(false)
+    // nobody reported rake, so every chip the house kept shows as unaccounted
+    expect(s.unaccounted).toBe(200)
     expect(s.reimbursements).toEqual([{ name: 'Sam', amount: 120, count: 1 }])
     expect(s.buyInsByMethod).toEqual([
       { method: 'cash', amount: 2500 },
@@ -99,14 +102,52 @@ describe('summarizeGame', () => {
     expect(s.totalDiscounts).toBe(100)
     expect(s.tipTax).toBe(30)
     expect(s.dealerNet).toBe(120)
-    // rake = 2000 − 1750 − 100 − 150 = 0 ; house = 0 + 30
-    expect(s.rake).toBe(0)
-    expect(s.houseTake).toBe(30)
+    // house chips = 2000 − 1750 − 150 = 100 ; house take = 100 + 30
+    expect(s.houseChips).toBe(100)
+    expect(s.houseTake).toBe(130)
+    // discounts are an expense: costs = 40 + 100
+    expect(s.totalCosts).toBe(140)
     expect(s.netProfit).toBe(-10)
-    expect(s.tipsByDealer[0]).toMatchObject({ name: 'Joe', amount: 150, tax: 30, net: 120 })
+    expect(s.discountsByPlayer).toEqual([{ playerId: 'bob', name: 'BOB', amount: 100 }])
+    expect(s.dealers[0]).toMatchObject({ name: 'Joe', amount: 150, tax: 30, net: 120 })
     const bob = s.players.find((p) => p.playerId === 'bob')!
     expect(bob.net).toBe(-900)
     expect(bob.discounts).toBe(100)
+  })
+})
+
+describe('dealer rounds', () => {
+  it('adds up reported rake and finds the over / short', () => {
+    const txs = [tx('ali', 'buy_in', 1000), tx('bob', 'buy_in', 1000), tx('ali', 'cash_out', 1500), tx('bob', 'cash_out', 260)]
+    const rounds = [tip('Marco', 20, 90), tip('Lucy', 0, 85), tip('Marco', 25, 0)]
+    const s = summarizeGame(txs, rounds, [exp(30, 'Game bank')], players, { tipTaxPct: 20, lossDiscountPct: 0 })
+    expect(s.rounds).toBe(3)
+    expect(s.totalRake).toBe(175)
+    expect(s.totalTips).toBe(45)
+    expect(s.tipTax).toBe(9)
+    // 2000 − 1760 − 45 − 175 = 20 over
+    expect(s.unaccounted).toBe(20)
+    expect(s.houseTake).toBe(204)
+    expect(s.netProfit).toBe(174)
+    // so far: rake + tip tax − costs, ignoring the $20 over
+    expect(s.profitSoFar).toBe(154)
+    expect(s.dealers.find((d) => d.name === 'Marco')).toMatchObject({ rounds: 2, rake: 90, amount: 45, tax: 9, net: 36 })
+    expect(s.lastRoundAt).toBe(rounds[2].created_at)
+  })
+
+  it('shows chips still in play while people are seated', () => {
+    const s = summarizeGame([tx('ali', 'buy_in', 1000), tx('bob', 'buy_in', 500)], [tip('Lucy', 10, 40)], [], players)
+    expect(s.allCashedOut).toBe(false)
+    expect(s.unaccounted).toBe(1450)
+  })
+})
+
+describe('discountRateFor', () => {
+  it('uses the player rate when set, else the game rate', () => {
+    expect(discountRateFor({ loss_discount_pct: null }, 10)).toBe(10)
+    expect(discountRateFor({ loss_discount_pct: 15 }, 10)).toBe(15)
+    expect(discountRateFor({ loss_discount_pct: 0 }, 10)).toBe(0)
+    expect(discountRateFor(undefined, 5)).toBe(5)
   })
 })
 

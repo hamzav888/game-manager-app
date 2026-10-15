@@ -50,6 +50,8 @@ export interface Player {
   name: string
   phone: string | null
   notes: string | null
+  /** their own loss discount %: null = the game's rate, 0 = never */
+  loss_discount_pct: number | null
   created_at: string
 }
 
@@ -85,11 +87,15 @@ export interface Transaction {
   updated_at: string | null
 }
 
+/** One dealer round: what the dealer reports when they get up. */
 export interface DealerTip {
   id: string
   game_id: string
   dealer_name: string
+  /** tips the dealer collected */
   amount: number
+  /** rake the dealer took for the house this round (varies every round) */
+  rake: number
   note: string | null
   created_at: string
   updated_at: string | null
@@ -224,8 +230,15 @@ export interface GameTotals {
   total_tips: number
   tip_tax: number
   total_expenses: number
+  /** reported rake + over/short + tip tax (before loss discounts) */
   house_take: number
   net_profit: number
+  /** rake reported by dealers */
+  total_rake: number
+  /** buy-ins − cash-outs − tips − rake: chips in play while live, over/short once everyone is out */
+  over_short: number
+  seated_count: number
+  last_round_at: string | null
 }
 
 export interface PlayerTotals {
@@ -242,6 +255,8 @@ export interface PlayerTotals {
   last_played: string | null
   /** account balance: positive = the house owes the player, negative = the player owes */
   balance: number
+  /** null = the game's rate, 0 = never */
+  loss_discount_pct: number | null
 }
 
 export interface PlayerGameResult {

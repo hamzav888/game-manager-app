@@ -22,10 +22,11 @@ You'll need:
 1. In the project, open **SQL Editor** in the left sidebar and click **New query**.
 2. Paste all of [`supabase/migrations/20261013000000_schema.sql`](supabase/migrations/20261013000000_schema.sql) and click **Run**. You should see **Success. No rows returned**.
 3. Click **New query** again. Paste all of [`supabase/migrations/20261014000000_owner_accounts.sql`](supabase/migrations/20261014000000_owner_accounts.sql) and click **Run**.
+4. Click **New query** once more. Paste all of [`supabase/migrations/20261015000000_rake_and_discounts.sql`](supabase/migrations/20261015000000_rake_and_discounts.sql) and click **Run**.
 
-These two files create every table, the security rules, the audit log and the owner tools.
+These three files create every table, the security rules, the audit log, the owner tools, dealer-round rake and per-player loss discounts. Run them in this order, each one once.
 
-> Already ran the first file earlier? Just run the second one. It upgrades what's there, and nothing is lost.
+> Already ran some of them? Just run the ones you haven't, in order. Each one upgrades what's there, and nothing is lost. If you run one twice it stops with "already installed" and changes nothing.
 
 ## 3. Configure sign-in
 
@@ -137,7 +138,8 @@ git push -u origin main
 - Every push to `main` redeploys automatically.
 - The `VITE_…` variables are built into the site. **After changing one, trigger a new deploy.**
 - `vercel.json` and `netlify.toml` already handle the rest:
-  - page routes like `/games/123`, `/join/…` and `/sample` (all served by `index.html`)
+  - page routes like `/games/123` and `/sample` (all served by `index.html`)
+  - the app manifest, icons and iPhone launch screens in `public/`
   - long-term caching of assets
   - security headers: a Content-Security-Policy, no framing, HTTPS-only
 - The CSP allows connections only to `*.supabase.co`. If you later put Supabase behind a custom domain, add it to `connect-src` in both files.
@@ -157,6 +159,24 @@ git push -u origin main
 6. Set `VITE_AUTH_GOOGLE=true` in `.env.local` and in your host's environment variables, then redeploy.
 
 Anyone who signs in with Google for the first time shows up in **Admin → Accounts → Waiting for approval**. They can't see anything until you approve them and add them to an organization. If you already made an account with the same email, Supabase links the Google login to it.
+
+## 9. Put it on your phone's home screen
+
+Once it's deployed, each person does this once on their own phone.
+
+**iPhone (Safari):**
+
+1. Open your live site (for example `https://poker-ledger.vercel.app`) in **Safari**. Other iPhone browsers work too on iOS 16.4+, but Safari is the most reliable.
+2. Tap the **Share** button (the square with the arrow), scroll down and tap **Add to Home Screen**.
+3. Leave the name as **Poker Ledger** and tap **Add**.
+4. Open it from the home screen. It runs full screen with the Poker Ledger icon and launch screen, like an installed app.
+5. **Sign in once inside the home-screen app.** iPhones keep home-screen apps separate from Safari, so being signed in in Safari doesn't carry over.
+
+**Android (Chrome):** open the site, tap **⋮ → Add to Home screen** (or **Install app**).
+
+**Mac / PC (Chrome or Edge):** click the install icon at the right of the address bar.
+
+Updates arrive by themselves: every time you deploy, the app picks up the new version the next time it's opened. If you change the logo, replace `branding/poker-ledger-logo.png`, run `python3 scripts/make-app-icons.py`, and deploy. Phones that already added the app may need to remove and re-add it to see a new icon.
 
 ---
 
@@ -178,6 +198,15 @@ Signed in as the owner, tap your chip avatar (top right) and choose **Admin**. Y
 5. **Blocking someone:** **Admin → Accounts → tap them → Block this account** cuts their access everywhere at once. Their history stays.
 
 People change their own password and display name from the account menu (tap their avatar → **Change password** / **Your name**).
+
+### Try it with a demo organization (optional)
+
+Want to see the app full of realistic data before your first real night? In Supabase → **SQL Editor → New query**, paste all of [`supabase/demo/demo_create.sql`](supabase/demo/demo_create.sql) and click **Run**.
+
+- It adds one organization, **Demo · Riverside Card Club**, with you as its admin: 14 made-up players, 3 partners, 8 ended games (with dealer rounds, discounts, expenses and payouts) and 2 tables running right now.
+- Your real organizations, players, games and accounts aren't touched, and no logins are created.
+- Switch to it from your avatar menu (**Switch to Demo · Riverside Card Club**).
+- When you're done, run [`supabase/demo/demo_remove.sql`](supabase/demo/demo_remove.sql) the same way. It deletes the demo organization and everything in it, and nothing else.
 
 ---
 
@@ -205,7 +234,7 @@ People change their own password and display name from the account menu (tap the
 | Create organizations; manage anyone's membership | ✓ | | |
 | Add members (existing accounts) to *their* organization; change roles; pause or remove | ✓ | ✓ | |
 | Partners, profit shares, payouts, house rules | (if admin there) | ✓ | |
-| Reopen or delete closed games; delete players | (if admin there) | ✓ | |
+| Reopen or delete ended games; delete players | (if admin there) | ✓ | |
 | Run games, players, payments; see ledgers and history | (if member) | ✓ | ✓ |
 
 The owner doesn't automatically see an organization's games: add yourself to it if you want to. Every organization always keeps at least one admin.
@@ -214,6 +243,8 @@ The owner doesn't automatically see an organization's games: add yourself to it 
 
 | Problem | Fix |
 |---|---|
+| "This upgrade is already installed" | That file already ran. Nothing changed; move on to the next one. |
+| The Add to Home Screen icon is a screenshot, or the app opens with Safari's address bar | Open the live **https** address (not a preview link), wait for it to load fully, then add it again. Delete the old home-screen icon first. |
 | `relation "profiles" already exists` when running the first file | Open **Table Editor**. If you see `organizations`, `games` and `memberships`, the schema already ran and you're done (it was run twice). If you only see a `profiles` table, the project came with one from a starter template. Use a fresh project, or (only if you don't need that table) run `drop trigger if exists on_auth_user_created on auth.users; drop table if exists public.profiles cascade;` and then run the schema again. |
 | "Supabase is blocking new accounts" when creating an account | Turn **Allow new users to sign up** back on (step 3). The app needs it, and strangers still can't do anything. |
 | "…needs email confirmation" when creating an account | Turn **Confirm email** off (step 3). Then open the account in Admin and set a new password for it. |
@@ -222,11 +253,11 @@ The owner doesn't automatically see an organization's games: add yourself to it 
 | Someone sees "Almost there" | Their account is fine. Add them to an organization (Admin, or their org admin via **Org → Add**). |
 | "Supabase isn't configured" on the live site | The `VITE_SUPABASE_*` variables are missing on the host. Add them and **redeploy**. |
 | Google: `redirect_uri_mismatch` | The redirect URI in Google must be exactly `https://YOUR-PROJECT-REF.supabase.co/auth/v1/callback`. |
-| "Not allowed…" when saving | Your role can't do that (see the table above), or the game is closed. |
+| "Not allowed…" when saving | Your role can’t do that (see the table above), or the game has ended. |
 
 ## For developers
 
-- Run the database security tests against a **throwaway local Postgres**, never your real project:
+- Run the database tests against a **throwaway local Postgres**, never your real project:
 
   ```bash
   PGHOST=127.0.0.1 PGPORT=5432 PGUSER=postgres npm run test:db

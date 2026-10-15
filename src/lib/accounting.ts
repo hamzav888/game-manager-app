@@ -35,10 +35,20 @@ export interface NamedTotal {
 }
 
 export interface DealerTotal extends NamedTotal {
+  /** rounds dealt (= count) */
+  rounds: number
+  /** rake this dealer reported for the house */
+  rake: number
   /** the house's cut of this dealer's tips */
   tax: number
   /** what the dealer takes home */
   net: number
+}
+
+export interface DiscountLine {
+  playerId: string
+  name: string
+  amount: number
 }
 
 export interface GameSummary {
@@ -47,6 +57,7 @@ export interface GameSummary {
   allCashedOut: boolean
   totalBuyIns: number
   totalCashOuts: number
+  /** loss discounts given back — booked as an expense */
   totalDiscounts: number
   /** gross dealer tips */
   totalTips: number
@@ -54,22 +65,41 @@ export interface GameSummary {
   tipTax: number
   /** what the dealers actually take home */
   dealerNet: number
-  totalExpenses: number
-  /** buy-ins − cash-outs − discounts − gross tips: chips the house kept */
-  rake: number
-  /** rake + tip tax: what the house earned before expenses */
+  /** rake the dealers reported, round by round */
+  totalRake: number
+  /** true once any dealer round has reported rake */
+  rakeReported: boolean
+  /** dealer rounds recorded */
+  rounds: number
+  lastRoundAt: string | null
+  /**
+   * buy-ins − cash-outs − tips − reported rake. While people are playing these
+   * are the chips that should be on the table; once everyone has cashed out
+   * it's the over (+) / short (−).
+   */
+  unaccounted: number
+  /** buy-ins − cash-outs − tips: every chip the house kept (rake + over/short) */
+  houseChips: number
+  /** house chips + tip tax: what the house earned before costs */
   houseTake: number
+  /** expenses entered for the game (food, venue…) */
+  totalExpenses: number
+  /** expenses + loss discounts */
+  totalCosts: number
   /** Money held by the house right now (includes chips still in play). */
   bank: number
-  /** house take − expenses: what the organizers made */
+  /** house take − expenses − loss discounts: what the organizers made */
   netProfit: number
+  /** reported rake + tip tax − costs: made so far, ignoring chips still in play */
+  profitSoFar: number
   /** Chips players are still sitting with (their buy-ins, as an upper bound). */
   seatedBuyIns: number
   totalWon: number
   totalLost: number
-  tipsByDealer: DealerTotal[]
+  dealers: DealerTotal[]
   expensesByPayer: NamedTotal[]
   expensesByCategory: { category: ExpenseCategory; amount: number }[]
+  discountsByPlayer: DiscountLine[]
   buyInsByMethod: { method: PayMethod; amount: number }[]
   /** Expenses paid out of pocket that the bank owes back. */
   reimbursements: NamedTotal[]
@@ -160,10 +190,12 @@ export function summarizeGame(
   const outC = of('cash_out')
   const discC = of('discount')
   const tipC = sum(tips.map((t) => t.amount))
+  const rakeC = sum(tips.map((t) => t.rake ?? 0))
   const taxC = pctOf(tipC, rates.tipTaxPct)
   const expC = sum(expenses.map((e) => e.amount))
-  const rakeC = buyC - outC - discC - tipC
-  const houseC = rakeC + taxC
+  const chipsC = buyC - outC - tipC
+  const houseC = chipsC + taxC
+  const costC = expC + discC
 
   const seated = players.filter((p) => p.status === 'playing')
   const out = players.filter((p) => p.status === 'out')
@@ -179,6 +211,19 @@ export function summarizeGame(
 
   const expensesByPayer = groupByName(expenses.map((e) => ({ name: e.paid_by, amount: e.amount })))
 
+  const byDealer = new Map<string, { name: string; tipC: number; rakeC: number; rounds: number }>()
+  for (const t of tips) {
+    const key = t.dealer_name.trim().toLowerCase()
+    const cur = byDealer.get(key) ?? { name: t.dealer_name.trim(), tipC: 0, rakeC: 0, rounds: 0 }
+    cur.tipC += cents(t.amount)
+    cur.rakeC += cents(t.rake ?? 0)
+    cur.rounds += 1
+    byDealer.set(key, cur)
+  }
+
+  const discounts = new Map<string, number>()
+  for (const t of txs) if (t.kind === 'discount') discounts.set(t.player_id, (discounts.get(t.player_id) ?? 0) + cents(t.amount))
+
   return {
     players,
     seatedCount: seated.length,
@@ -189,27 +234,52 @@ export function summarizeGame(
     totalTips: dollars(tipC),
     tipTax: dollars(taxC),
     dealerNet: dollars(tipC - taxC),
-    totalExpenses: dollars(expC),
-    rake: dollars(rakeC),
+    totalRake: dollars(rakeC),
+    rakeReported: rakeC > 0,
+    rounds: tips.length,
+    lastRoundAt: tips.reduce<string | null>((m, t) => (!m || t.created_at > m ? t.created_at : m), null),
+    unaccounted: dollars(chipsC - rakeC),
+    houseChips: dollars(chipsC),
     houseTake: dollars(houseC),
-    bank: dollars(houseC),
-    netProfit: dollars(houseC - expC),
+    totalExpenses: dollars(expC),
+    totalCosts: dollars(costC),
+    bank: dollars(houseC - discC),
+    netProfit: dollars(houseC - costC),
+    profitSoFar: dollars(rakeC + taxC - costC),
     seatedBuyIns: dollars(sum(seated.map((p) => p.buyIns))),
     totalWon: dollars(sum(out.filter((p) => p.net > 0).map((p) => p.net))),
     totalLost: dollars(-sum(out.filter((p) => p.net < 0).map((p) => p.net))),
-    tipsByDealer: groupByName(tips.map((t) => ({ name: t.dealer_name, amount: t.amount }))).map((d) => {
-      const taxD = pctOf(cents(d.amount), rates.tipTaxPct)
-      return { ...d, tax: dollars(taxD), net: dollars(cents(d.amount) - taxD) }
-    }),
+    dealers: [...byDealer.values()]
+      .map((d) => {
+        const taxD = pctOf(d.tipC, rates.tipTaxPct)
+        return {
+          name: d.name,
+          amount: dollars(d.tipC),
+          count: d.rounds,
+          rounds: d.rounds,
+          rake: dollars(d.rakeC),
+          tax: dollars(taxD),
+          net: dollars(d.tipC - taxD),
+        }
+      })
+      .sort((a, b) => b.rake + b.amount - (a.rake + a.amount)),
     expensesByPayer,
     expensesByCategory: [...catTotals.entries()]
       .map(([category, c]) => ({ category, amount: dollars(c) }))
+      .sort((a, b) => b.amount - a.amount),
+    discountsByPlayer: [...discounts.entries()]
+      .map(([playerId, c]) => ({ playerId, name: playersById.get(playerId)?.name ?? 'Unknown player', amount: dollars(c) }))
       .sort((a, b) => b.amount - a.amount),
     buyInsByMethod: [...methodTotals.entries()]
       .map(([method, c]) => ({ method, amount: dollars(c) }))
       .sort((a, b) => b.amount - a.amount),
     reimbursements: expensesByPayer.filter((p) => p.name.toLowerCase() !== BANK_PAYER.toLowerCase()),
   }
+}
+
+/** The loss discount % that applies to a player: their own rate, else the game's. */
+export function discountRateFor(player: Pick<Player, 'loss_discount_pct'> | undefined, gamePct: number): number {
+  return player?.loss_discount_pct ?? gamePct
 }
 
 /** Split a profit (can be negative) by partner share %, rounding to cents. */

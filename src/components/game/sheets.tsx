@@ -284,12 +284,15 @@ export function AddPlayerSheet({
 export function CashOutSheet({
   game,
   line,
+  discountPct,
   existing,
   onClose,
   onSaved,
 }: {
   game: Game
   line: PlayerLine
+  /** this player's loss discount % (their own rate, else the game's) */
+  discountPct: number
   existing?: Transaction
   onClose: () => void
   onSaved: () => void
@@ -304,7 +307,8 @@ export function CashOutSheet({
   const valid = value >= 0 && amount.trim() !== ''
 
   const replacing = existing?.amount ?? 0
-  const due = valid ? lossDiscountDue(line, value, game.loss_discount_pct, replacing) : 0
+  const due = valid ? lossDiscountDue(line, value, discountPct, replacing) : 0
+  const ownRate = discountPct !== game.loss_discount_pct
   const discount = giveDiscount ? due : 0
   const otherCashOuts = line.cashOuts - replacing
   const net = (valid ? value : 0) + otherCashOuts + line.discounts + discount - line.buyIns
@@ -322,7 +326,7 @@ export function CashOutSheet({
             kind: 'discount',
             amount: discount,
             method: method === 'account' ? 'account' : 'cash',
-            note: `${game.loss_discount_pct}% loss discount`,
+            note: `${discountPct}% loss discount`,
           })
       },
       existing ? 'Cash-out updated' : `${line.name} cashed out ${money(value + discount)}`,
@@ -391,14 +395,21 @@ export function CashOutSheet({
         </div>
         {counting && <ChipCounter onTotal={(t) => setAmount(amountStr(t))} />}
 
-        {game.loss_discount_pct > 0 && due > 0 && (
+        {discountPct > 0 && due > 0 && (
           <label className="flex cursor-pointer items-center gap-3 rounded-[12px] border border-brass/30 bg-brass/[0.06] px-3.5 py-3">
             <input type="checkbox" checked={giveDiscount} onChange={(e) => setGiveDiscount(e.target.checked)} className="size-4 accent-[#d6ae62]" />
             <span className="flex-1 text-sm">
-              Loss discount <span className="text-muted">({game.loss_discount_pct}% of the loss)</span>
+              Loss discount{' '}
+              <span className="text-muted">
+                ({discountPct}% of the loss{ownRate ? ', their own rate' : ''})
+              </span>
+              <span className="block text-xs text-faint">Booked as an expense of this game.</span>
             </span>
             <Money value={due} className="font-semibold text-brass" />
           </label>
+        )}
+        {discountPct === 0 && game.loss_discount_pct > 0 && valid && value < line.buyIns && (
+          <p className="text-xs text-faint">{line.name} doesn’t get a loss discount (set on their player profile).</p>
         )}
 
         <MethodField label="Paid out with" value={method} onChange={setMethod} accountHint="Credited to the player’s account instead of paid now." />
@@ -548,34 +559,43 @@ export function PlayerGameSheet({
   )
 }
 
-// ---------------------------------------------------------------- Dealer tip
+// ---------------------------------------------------------------- Dealer round (rake + tips)
 
-export function TipSheet({
+export function RoundSheet({
   game,
   existing,
+  roundNo,
   dealerNames,
+  suggestedDealer,
   onClose,
   onSaved,
 }: {
   game: Game
   existing?: DealerTip
+  /** the round's number in this game (for the title) */
+  roundNo: number
   dealerNames: string[]
+  /** likely next dealer in the rotation */
+  suggestedDealer?: string
   onClose: () => void
   onSaved: () => void
 }) {
   const { busy, save } = useSave(onSaved, onClose)
-  const [dealer, setDealer] = useState(existing?.dealer_name ?? dealerNames[0] ?? '')
-  const [amount, setAmount] = useState(existing ? amountStr(existing.amount) : '')
+  const [dealer, setDealer] = useState(existing?.dealer_name ?? suggestedDealer ?? dealerNames[0] ?? '')
+  const [rake, setRake] = useState(existing && existing.rake ? amountStr(existing.rake) : '')
+  const [tips, setTips] = useState(existing && existing.amount ? amountStr(existing.amount) : '')
   const [note, setNote] = useState(existing?.note ?? '')
-  const value = parseAmount(amount)
-  const valid = value > 0 && dealer.trim().length > 0
-  const tax = valid ? Math.round(value * game.tip_tax_pct) / 100 : 0
+  const rakeN = rake.trim() === '' ? 0 : parseAmount(rake)
+  const tipsN = tips.trim() === '' ? 0 : parseAmount(tips)
+  const valid = rakeN >= 0 && tipsN >= 0 && rakeN + tipsN > 0 && dealer.trim().length > 0
+  const tax = valid ? Math.round(tipsN * game.tip_tax_pct) / 100 : 0
+  const name = dealer.trim() || 'The dealer'
 
   const submit = () => {
-    const payload = { dealer_name: dealer.trim(), amount: value, note: note.trim() || null }
+    const payload = { dealer_name: dealer.trim(), rake: rakeN, amount: tipsN, note: note.trim() || null }
     return save(
       () => (existing ? updateTip(existing.id, payload) : addTip({ ...payload, game_id: game.id })),
-      existing ? 'Tip updated' : `Tip of ${money(value)} for ${dealer.trim()} recorded`,
+      existing ? `Round ${roundNo} updated` : `Round ${roundNo}: ${money(rakeN)} rake, ${money(tipsN)} tips`,
     )
   }
 
@@ -583,21 +603,29 @@ export function TipSheet({
     <Sheet
       open
       onClose={onClose}
-      title={existing ? 'Edit dealer tip' : 'Dealer tip'}
+      title={existing ? `Edit round ${roundNo}` : `Round ${roundNo}`}
+      subtitle="What the dealer reports when they get up."
       footer={
         <div className="space-y-3">
-          {valid && game.tip_tax_pct > 0 && (
-            <div className="flex items-center justify-between rounded-[12px] border border-line bg-bg px-4 py-3 text-sm">
-              <span className="text-muted">
-                House keeps {game.tip_tax_pct}% · <Money value={tax} className="text-brass" />
-              </span>
-              <span>
-                {dealer.trim() || 'Dealer'} gets <Money value={value - tax} className="font-semibold" />
-              </span>
+          {valid && (
+            <div className="grid grid-cols-2 divide-x divide-line rounded-[12px] border border-line bg-bg text-sm">
+              <div className="px-3.5 py-2.5">
+                <div className="text-xs text-muted">To the house</div>
+                <Money value={rakeN + tax} className="font-display text-[24px] leading-tight text-brass" />
+                <div className="text-[11px] text-faint">
+                  rake {money(rakeN)}
+                  {tax > 0 && ` + ${money(tax)} tip tax`}
+                </div>
+              </div>
+              <div className="px-3.5 py-2.5">
+                <div className="truncate text-xs text-muted">{name} takes home</div>
+                <Money value={tipsN - tax} className="font-display text-[24px] leading-tight" />
+                <div className="text-[11px] text-faint">{game.tip_tax_pct > 0 ? `tips − ${game.tip_tax_pct}% tip tax` : 'all their tips'}</div>
+              </div>
             </div>
           )}
           <Button variant="primary" size="lg" className="w-full" disabled={!valid} loading={busy} onClick={submit}>
-            {existing ? 'Save changes' : 'Record tip'}
+            {existing ? 'Save changes' : 'Record round'}
           </Button>
         </div>
       }
@@ -621,14 +649,20 @@ export function TipSheet({
             ))}
           </div>
         )}
-        <Field label="Tip amount" hint={`Chips taken off the table for the dealer. The house keeps ${game.tip_tax_pct}% as tip tax.`}>
-          <AmountInput value={amount} onChange={setAmount} autoFocus={!!dealer} />
+        <Field label="Rake this round" hint="The chips the dealer took out of the pots for the house.">
+          <AmountInput value={rake} onChange={setRake} autoFocus={!!dealer} />
+        </Field>
+        <Field
+          label="Tips this round"
+          hint={game.tip_tax_pct > 0 ? `Chips players tipped the dealer. The house keeps ${game.tip_tax_pct}% as tip tax.` : 'Chips players tipped the dealer.'}
+        >
+          <AmountInput value={tips} onChange={setTips} />
         </Field>
         <Field label="Note (optional)">
           <TextInput value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} />
         </Field>
       </form>
-      {existing && <DeleteRow label="this tip" onDelete={() => save(() => deleteTip(existing.id), 'Tip deleted')} />}
+      {existing && <DeleteRow label="this round" onDelete={() => save(() => deleteTip(existing.id), `Round ${roundNo} deleted`)} />}
     </Sheet>
   )
 }

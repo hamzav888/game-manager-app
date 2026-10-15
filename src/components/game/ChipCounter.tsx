@@ -93,7 +93,7 @@ export function ChipCounter({ onTotal }: { onTotal: (total: number) => void }) {
 
       {editing ? (
         <div className="flex gap-2">
-          <input className={cx(inputCls, 'h-10 text-sm')} value={draft} onChange={(e) => setDraft(e.target.value)} />
+          <input className={cx(inputCls, 'h-10 text-base sm:text-sm')} value={draft} onChange={(e) => setDraft(e.target.value)} />
           <button type="button" className="rounded-[10px] bg-surface-2 px-3 text-sm" onClick={applyDraft}>
             Save
           </button>
@@ -112,7 +112,7 @@ export function ChipCounter({ onTotal }: { onTotal: (total: number) => void }) {
                   aria-label={`Number of ${money(v)} chips`}
                   value={counts[v] ?? ''}
                   onChange={(e) => setCounts((c) => ({ ...c, [v]: e.target.value.replace(/\D/g, '').slice(0, 5) }))}
-                  className="h-8 w-full min-w-0 rounded-lg bg-bg px-2 text-right text-[15px] tnum outline-none focus:ring-1 focus:ring-brass/70"
+                  className="h-8 w-full min-w-0 rounded-lg bg-bg px-2 text-right text-[16px] tnum outline-none focus:ring-1 focus:ring-brass/70"
                 />
               </label>
             )
