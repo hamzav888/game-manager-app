@@ -22,6 +22,7 @@ import { Link } from 'react-router'
 import { addMember, removeMember, updateMember, updateOrganization } from '../lib/api'
 import { formatStamp } from '../lib/format'
 import type { Member, Role } from '../lib/types'
+import { USERNAME_RE, cleanUsername } from '../lib/username'
 
 const ROLES: { value: Role; label: string }[] = [
   { value: 'organizer', label: 'Organizer' },
@@ -92,7 +93,7 @@ function MemberSheet({ member, onClose }: { member: Member; onClose: () => void 
   const { busy, run } = useAction()
   const [role, setRole] = useState<Role>(member.role)
   const isMe = member.user_id === user?.id
-  const name = member.display_name || member.email || 'Member'
+  const name = member.display_name || (member.username ? `@${member.username}` : 'Member')
 
   const done = async (ok: boolean) => {
     if (!ok) return
@@ -105,7 +106,7 @@ function MemberSheet({ member, onClose }: { member: Member; onClose: () => void 
       open
       onClose={onClose}
       title={name}
-      subtitle={member.email}
+      subtitle={member.username ? `@${member.username}` : undefined}
       footer={
         isAdmin && role !== member.role ? (
           <Button variant="primary" size="lg" className="w-full" loading={busy} onClick={async () => done(await run(() => updateMember(member.user_id, { role }), 'Role updated'))}>
@@ -163,9 +164,9 @@ function MemberSheet({ member, onClose }: { member: Member; onClose: () => void 
 function AddMemberSheet({ onClose }: { onClose: () => void }) {
   const { refresh, org } = useAuth()
   const { busy, run } = useAction()
-  const [email, setEmail] = useState('')
+  const [login, setLogin] = useState('')
   const [role, setRole] = useState<Role>('organizer')
-  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+  const valid = USERNAME_RE.test(cleanUsername(login))
 
   return (
     <Sheet
@@ -180,15 +181,15 @@ function AddMemberSheet({ onClose }: { onClose: () => void }) {
           className="w-full"
           disabled={!valid}
           loading={busy}
-          onClick={() => run(() => addMember(email, role), 'Member added').then((ok) => ok && (void refresh(), onClose()))}
+          onClick={() => run(() => addMember(cleanUsername(login), role), 'Member added').then((ok) => ok && (void refresh(), onClose()))}
         >
           Add member
         </Button>
       }
     >
       <div className="space-y-4">
-        <Field label="Their account email">
-          <TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoCapitalize="none" placeholder="name@example.com" autoFocus />
+        <Field label="Their username">
+          <TextInput value={login} onChange={(e) => setLogin(e.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="e.g. jordan" autoFocus />
         </Field>
         <Field label="Role">
           <Segmented value={role} options={ROLES} onChange={setRole} />
@@ -242,13 +243,13 @@ export function OrganizationPage() {
             onClick={() => setOpenMember(m)}
             className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2/60"
           >
-            <Avatar name={m.display_name || m.email || '?'} />
+            <Avatar name={m.display_name || m.username || '?'} />
             <span className="min-w-0 flex-1">
               <span className="block truncate font-medium">
-                {m.display_name || m.email?.split('@')[0]}
+                {m.display_name || `@${m.username}`}
                 {m.user_id === user?.id && <span className="font-normal text-faint"> · you</span>}
               </span>
-              <span className="block truncate text-[13px] text-muted">{m.email}</span>
+              <span className="block truncate text-[13px] text-muted">{m.username ? `@${m.username}` : ''}</span>
             </span>
             {!m.active && <Badge tone="warn">Paused</Badge>}
             <Badge tone={m.role === 'admin' ? 'brass' : 'neutral'}>{m.role === 'admin' ? 'Admin' : 'Organizer'}</Badge>

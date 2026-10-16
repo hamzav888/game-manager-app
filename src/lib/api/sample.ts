@@ -3,6 +3,10 @@
 // but everything lives in this tab's sessionStorage. Nothing leaves the browser.
 import type {
   AccountTx,
+  Dealer,
+  DealerAccount,
+  DealerPayment,
+  DealerRound,
   AuditEntry,
   AuditFilter,
   AuditTable,
@@ -15,6 +19,7 @@ import type {
   AdminOrg,
   Member,
   MyOrg,
+  NameBook,
   Partner,
   PartnerAccount,
   PartnerEntry,
@@ -28,14 +33,23 @@ import type {
   Transaction,
 } from '../types'
 import { emitSampleChange } from './sampleBus'
-import { SAMPLE_EMAIL, SAMPLE_USER_ID, SAMPLE_VERSION, postShares, sampleId, seedSample } from './sampleSeed'
+import { SAMPLE_EMAIL, SAMPLE_USER_ID, SAMPLE_VERSION, loginEmail, postShares, sampleId, seedSample } from './sampleSeed'
 import type { SampleDb } from './sampleSeed'
-import type { ExpenseInput, PartnerEntryInput, PartnerInput, PaymentInput, TipInput, TxInput } from './supabase'
+import type {
+  DealerPaymentInput,
+  ExpenseInput,
+  PartnerEntryInput,
+  PartnerInput,
+  PaymentInput,
+  TipInput,
+  TxInput,
+  WhoAmI,
+} from './supabase'
 
 const KEY = 'poker-ledger:sample'
 const TABLES = [
   'organizations', 'memberships', 'players', 'games', 'transactions', 'dealer_tips', 'expenses',
-  'partners', 'partner_entries', 'partner_shares', 'player_payments', 'audit_log',
+  'partners', 'partner_entries', 'partner_shares', 'player_payments', 'dealers', 'dealer_payments', 'audit_log',
 ]
 
 function load(): SampleDb {
@@ -78,10 +92,13 @@ function fail(message: string): never {
   throw new Error(message)
 }
 
+const ACCOUNT_TABLES: AuditTable[] = ['profiles', 'passwords', 'sign_ins', 'app_admins']
+
 function audit(table: AuditTable, action: AuditEntry['action'], oldRow: object | null, newRow: object | null) {
   const row = (newRow ?? oldRow) as Record<string, unknown>
   db.audit.push({
     id: db.nextAuditId++,
+    org_id: ACCOUNT_TABLES.includes(table) ? null : ((row.org_id as string) ?? db.org.id),
     occurred_at: now(),
     actor_id: SAMPLE_USER_ID,
     actor_email: SAMPLE_EMAIL,
@@ -91,6 +108,7 @@ function audit(table: AuditTable, action: AuditEntry['action'], oldRow: object |
     game_id: table === 'games' ? String(row.id) : ((row.game_id as string) ?? null),
     player_id: table === 'players' ? String(row.id) : ((row.player_id as string) ?? null),
     partner_id: table === 'partners' ? String(row.id) : ((row.partner_id as string) ?? null),
+    dealer_id: table === 'dealers' ? String(row.id) : ((row.dealer_id as string) ?? null),
     old_data: oldRow ? copy(oldRow as Record<string, unknown>) : null,
     new_data: newRow ? copy(newRow as Record<string, unknown>) : null,
   })
@@ -122,9 +140,9 @@ function validPct(n: number | undefined) {
 
 const SAMPLE_ONLY = 'In the sample you browse one organization. Create real ones in the real app.'
 
-export async function whoAmI(): Promise<{ is_owner: boolean; approved: boolean }> {
+export async function whoAmI(): Promise<WhoAmI> {
   await latency()
-  return { is_owner: true, approved: true }
+  return { is_owner: true, approved: true, username: db.accounts.find((a) => a.id === SAMPLE_USER_ID)?.username ?? 'sam' }
 }
 
 export async function listMyOrganizations(): Promise<MyOrg[]> {
@@ -160,9 +178,10 @@ function protectLastAdmin(members: Member[], m: Member, next: Member | null) {
 
 const memberRow = (orgId: string, m: Member) => ({ org_id: orgId, user_id: m.user_id, role: m.role, active: m.active })
 
-function addTo(orgId: string, email: string, role: Role) {
-  const acct = db.accounts.find((a) => a.email === email.trim().toLowerCase() && a.approved)
-  if (!acct) fail(`No account uses ${email.trim().toLowerCase()}. Ask the app owner to create it first.`)
+function addTo(orgId: string, login: string, role: Role) {
+  const key = login.trim().toLowerCase().replace(/^@/, '')
+  const acct = db.accounts.find((a) => (a.username === key || a.email === key) && a.approved)
+  if (!acct) fail(`No account is called ${key}. Ask the app owner to create it first.`)
   const entry = orgEntry(orgId)
   const existing = entry.members.find((m) => m.user_id === acct.id)
   if (existing) {
@@ -170,7 +189,7 @@ function addTo(orgId: string, email: string, role: Role) {
     Object.assign(existing, { role, active: true })
     if (orgId === db.org.id) audit('memberships', 'UPDATE', before, memberRow(orgId, existing))
   } else {
-    const m: Member = { user_id: acct.id, email: acct.email, display_name: acct.display_name, role, active: true, created_at: now() }
+    const m: Member = { user_id: acct.id, username: acct.username, email: acct.email, display_name: acct.display_name, role, active: true, created_at: now() }
     entry.members.push(m)
     if (orgId === db.org.id) audit('memberships', 'INSERT', null, memberRow(orgId, m))
   }
@@ -202,9 +221,9 @@ export async function listMembers(): Promise<Member[]> {
   return copy(db.members)
 }
 
-export async function addMember(email: string, role: Role) {
+export async function addMember(username: string, role: Role) {
   await latency()
-  addTo(db.org.id, email, role)
+  addTo(db.org.id, username, role)
 }
 
 export async function updateMember(userId: string, patch: { role?: Role; active?: boolean }) {
@@ -221,8 +240,19 @@ export async function updateMyProfile(userId: string, patch: { display_name: str
   await latency()
   for (const o of allOrgs()) for (const m of o.members) if (m.user_id === userId) m.display_name = patch.display_name
   const a = db.accounts.find((x) => x.id === userId)
-  if (a) a.display_name = patch.display_name
+  if (a) {
+    audit('profiles', 'UPDATE', { id: a.id, username: a.username, display_name: a.display_name }, { id: a.id, username: a.username, display_name: patch.display_name })
+    a.display_name = patch.display_name
+  }
   commit('memberships')
+}
+
+export async function changeMyPassword(current: string, next: string) {
+  await latency()
+  if (!current) fail('Your current password isn’t right.')
+  if (!next) fail('Enter a new password.')
+  audit('passwords', 'INSERT', null, { id: SAMPLE_USER_ID, username: 'sam', by: 'self' })
+  commit()
 }
 
 // ---------------------------------------------------------------- owner (app admin)
@@ -234,7 +264,7 @@ export async function createOrganization(name: string, adminUserId?: string | nu
   const org = { id: sampleId(), name: name.trim(), tip_tax_pct: 0, loss_discount_pct: 0, created_at: now() }
   db.extraOrgs.unshift({
     org,
-    members: [{ user_id: admin.id, email: admin.email, display_name: admin.display_name, role: 'admin', active: true, created_at: now() }],
+    members: [{ user_id: admin.id, username: admin.username, email: admin.email, display_name: admin.display_name, role: 'admin', active: true, created_at: now() }],
   })
   commit('organizations')
   return org.id
@@ -264,32 +294,68 @@ export async function adminListOrganizations(): Promise<AdminOrg[]> {
   }))
 }
 
-export async function adminCreateAccount(a: { email: string; password: string; name: string }): Promise<string> {
+const USERNAME = /^[a-z0-9][a-z0-9._-]{0,31}$/
+const USERNAME_RULE = 'Usernames are up to 32 letters, numbers, dots, dashes or underscores, starting with a letter or number.'
+
+export async function adminCreateAccount(a: { username: string; password: string; name: string }): Promise<string> {
   await latency()
-  const email = a.email.trim().toLowerCase()
-  if (db.accounts.some((x) => x.email === email)) fail('An account with that email already exists.')
-  if (a.password.length < 8) fail('Passwords need at least 8 characters.')
+  const username = a.username.trim().toLowerCase()
+  if (!USERNAME.test(username)) fail(USERNAME_RULE)
+  if (db.accounts.some((x) => x.username === username)) fail(`The username ${username} is already taken.`)
+  if (!a.password) fail('Enter a password.')
   const id = sampleId()
-  db.accounts.unshift({
-    id, email, display_name: a.name.trim() || email.split('@')[0], approved: true, is_owner: false,
+  const acct = {
+    id, username, email: loginEmail(username), display_name: a.name.trim() || username, approved: true, is_owner: false,
     created_at: now(), last_sign_in_at: null, organizations: null,
-  })
+  }
+  db.accounts.unshift(acct)
+  audit('profiles', 'INSERT', null, { id, username, display_name: acct.display_name, approved: true })
   commit('memberships')
   return id
+}
+
+export async function adminNames(): Promise<NameBook> {
+  await latency()
+  const label = (g: Game) => `${g.name} · ${new Date(`${g.game_date}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+  return {
+    org: new Map(allOrgs().map((o) => [o.org.id, o.org.name])),
+    player: new Map(db.players.map((p) => [p.id, p.name])),
+    game: new Map(db.games.map((g) => [g.id, label(g)])),
+    partner: new Map(db.partners.map((p) => [p.id, p.name])),
+    dealer: new Map(db.dealers.map((d) => [d.id, d.name])),
+    account: new Map(db.accounts.map((a) => [a.id, a.display_name || a.username || a.email || ''])),
+  }
+}
+
+export async function adminSetUsername(userId: string, username: string) {
+  await latency()
+  const u = username.trim().toLowerCase()
+  if (!USERNAME.test(u)) fail(USERNAME_RULE)
+  if (db.accounts.some((x) => x.username === u && x.id !== userId)) fail(`The username ${u} is already taken.`)
+  const a = db.accounts.find((x) => x.id === userId) ?? fail('Account not found.')
+  audit('profiles', 'UPDATE', { id: a.id, username: a.username }, { id: a.id, username: u })
+  a.username = u
+  a.email = loginEmail(u)
+  for (const o of allOrgs()) for (const m of o.members) if (m.user_id === userId) Object.assign(m, { username: u, email: a.email })
+  commit('memberships')
 }
 
 export async function adminSetApproved(userId: string, approved: boolean) {
   await latency()
   const a = db.accounts.find((x) => x.id === userId) ?? fail('Account not found.')
   if (!approved && a.is_owner) fail('The owner account is always approved.')
+  audit('profiles', 'UPDATE', { id: a.id, username: a.username, approved: a.approved }, { id: a.id, username: a.username, approved })
   a.approved = approved
   if (!approved) for (const o of allOrgs()) for (const m of o.members) if (m.user_id === userId) m.active = false
   commit('memberships')
 }
 
-export async function adminSetPassword(_userId: string, password: string) {
+export async function adminSetPassword(userId: string, password: string) {
   await latency()
-  if (password.length < 8) fail('Passwords need at least 8 characters.')
+  if (!password) fail('Enter a password.')
+  const a = db.accounts.find((x) => x.id === userId) ?? fail('Account not found.')
+  audit('passwords', 'INSERT', null, { id: a.id, username: a.username, by: 'owner' })
+  commit()
 }
 
 export async function adminOrgMembers(org: string): Promise<Member[]> {
@@ -590,14 +656,28 @@ function validRound(amount: number, rake: number) {
   if (!(amount + rake > 0)) fail('Enter the rake or the tips for this round.')
 }
 
+/** Mirror of the round_dealer trigger: find the dealer by id or name, opening an account for a new name. */
+function dealerFor(dealerId: string | null, name: string): Dealer {
+  if (dealerId) return find(db.dealers, dealerId)
+  const key = name.trim().toLowerCase()
+  if (!key) fail('Choose the dealer for this round.')
+  const existing = db.dealers.find((d) => d.name.trim().toLowerCase() === key)
+  if (existing) return existing
+  const d: Dealer = { id: sampleId(), name: name.trim(), phone: null, notes: null, active: true, created_at: now() }
+  db.dealers.push(d)
+  audit('dealers', 'INSERT', null, d)
+  return d
+}
+
 export async function addTip(t: TipInput) {
   await latency()
   assertOpen(t.game_id)
   validRound(t.amount, t.rake)
-  const row: DealerTip = { ...t, id: sampleId(), created_at: now(), updated_at: null }
+  const dealer = dealerFor(t.dealer_id, t.dealer_name)
+  const row: DealerTip = { ...t, dealer_id: dealer.id, dealer_name: dealer.name, id: sampleId(), created_at: now(), updated_at: null }
   db.dealer_tips.push(row)
   audit('dealer_tips', 'INSERT', null, row)
-  commit('dealer_tips')
+  commit('dealer_tips', 'dealers')
 }
 
 export async function updateTip(id: string, patch: Partial<Omit<TipInput, 'game_id'>>) {
@@ -606,9 +686,13 @@ export async function updateTip(id: string, patch: Partial<Omit<TipInput, 'game_
   assertOpen(t.game_id)
   validRound(patch.amount ?? t.amount, patch.rake ?? t.rake)
   const before = { ...t }
-  Object.assign(t, patch, { updated_at: now() })
+  const dealer =
+    patch.dealer_id !== undefined || patch.dealer_name !== undefined
+      ? dealerFor(patch.dealer_id ?? null, patch.dealer_name ?? t.dealer_name)
+      : find(db.dealers, t.dealer_id)
+  Object.assign(t, patch, { dealer_id: dealer.id, dealer_name: dealer.name, updated_at: now() })
   audit('dealer_tips', 'UPDATE', before, t)
-  commit('dealer_tips')
+  commit('dealer_tips', 'dealers')
 }
 
 export async function deleteTip(id: string) {
@@ -629,10 +713,11 @@ export async function addExpense(e: ExpenseInput) {
   await latency()
   assertOpen(e.game_id)
   validAmount(e.amount, false)
+  if (e.dealer_id) find(db.dealers, e.dealer_id)
   const row: Expense = { ...e, paid_by: paidByLabel(e.partner_id), id: sampleId(), created_at: now(), updated_at: null }
   db.expenses.push(row)
   audit('expenses', 'INSERT', null, row)
-  commit('expenses', 'partners')
+  commit('expenses', 'partners', 'dealers')
 }
 
 export async function updateExpense(id: string, patch: Partial<Omit<ExpenseInput, 'game_id'>>) {
@@ -640,11 +725,12 @@ export async function updateExpense(id: string, patch: Partial<Omit<ExpenseInput
   const e = find(db.expenses, id)
   assertOpen(e.game_id)
   if (patch.amount !== undefined) validAmount(patch.amount, false)
+  if (patch.dealer_id) find(db.dealers, patch.dealer_id)
   const before = { ...e }
   Object.assign(e, patch, { updated_at: now() })
   e.paid_by = paidByLabel(e.partner_id)
   audit('expenses', 'UPDATE', before, e)
-  commit('expenses', 'partners')
+  commit('expenses', 'partners', 'dealers')
 }
 
 export async function deleteExpense(id: string) {
@@ -653,17 +739,121 @@ export async function deleteExpense(id: string) {
   assertOpen(e.game_id)
   db.expenses = db.expenses.filter((x) => x !== e)
   audit('expenses', 'DELETE', e, null)
-  commit('expenses', 'partners')
+  commit('expenses', 'partners', 'dealers')
 }
 
-export async function recentDealerNames(): Promise<string[]> {
-  await latency()
-  const seen = new Map<string, string>()
-  for (const t of [...db.dealer_tips].sort((a, b) => b.created_at.localeCompare(a.created_at))) {
-    const k = t.dealer_name.trim().toLowerCase()
-    if (!seen.has(k)) seen.set(k, t.dealer_name.trim())
+// ---------------------------------------------------------------- dealers
+
+function dealerAccount(d: Dealer): DealerAccount {
+  const games = new Map(db.games.map((g) => [g.id, g]))
+  const rounds = db.dealer_tips.filter((t) => t.dealer_id === d.id)
+  let taxC = 0
+  let owedC = 0
+  for (const t of rounds) {
+    const tax = Math.round((cents(t.amount) * (games.get(t.game_id)?.tip_tax_pct ?? 0)) / 100)
+    taxC += tax
+    if (t.method === 'account') owedC += cents(t.amount) - tax
   }
-  return [...seen.values()].slice(0, 8)
+  const settled = db.dealer_payments
+    .filter((p) => p.dealer_id === d.id)
+    .reduce((s, p) => s + (p.direction === 'from_dealer' ? cents(p.amount) : -cents(p.amount)), 0)
+  const tipsC = rounds.reduce((s, t) => s + cents(t.amount), 0)
+  return {
+    ...d,
+    rounds: rounds.length,
+    games: new Set(rounds.map((t) => t.game_id)).size,
+    total_rake: sum(rounds.map((t) => t.rake)),
+    total_tips: tipsC / 100,
+    tip_tax: taxC / 100,
+    net_tips: (tipsC - taxC) / 100,
+    dealer_pay: sum(db.expenses.filter((e) => e.dealer_id === d.id).map((e) => e.amount)),
+    last_dealt: rounds.map((t) => games.get(t.game_id)?.game_date ?? '').sort().at(-1) || null,
+    balance: (owedC + settled) / 100,
+  }
+}
+
+export async function listDealerAccounts(): Promise<DealerAccount[]> {
+  await latency()
+  return copy([...db.dealers].sort((a, b) => a.name.localeCompare(b.name)).map(dealerAccount))
+}
+
+export async function getDealerAccount(id: string): Promise<DealerAccount | null> {
+  await latency()
+  const d = db.dealers.find((x) => x.id === id)
+  return d ? copy(dealerAccount(d)) : null
+}
+
+export async function createDealer(name: string): Promise<Dealer> {
+  await latency()
+  assertUniqueName(db.dealers, name)
+  const d: Dealer = { id: sampleId(), name: name.trim(), phone: null, notes: null, active: true, created_at: now() }
+  db.dealers.push(d)
+  audit('dealers', 'INSERT', null, d)
+  commit('dealers')
+  return copy(d)
+}
+
+export async function updateDealer(id: string, patch: Partial<Pick<Dealer, 'name' | 'phone' | 'notes' | 'active'>>) {
+  await latency()
+  const d = find(db.dealers, id)
+  if (patch.name !== undefined) assertUniqueName(db.dealers, patch.name, id)
+  const before = { ...d }
+  Object.assign(d, patch)
+  for (const t of db.dealer_tips) if (t.dealer_id === id) t.dealer_name = d.name
+  audit('dealers', 'UPDATE', before, d)
+  commit('dealers', 'dealer_tips')
+}
+
+export async function deleteDealer(id: string) {
+  await latency()
+  const d = find(db.dealers, id)
+  if (db.dealer_tips.some((t) => t.dealer_id === id) || db.dealer_payments.some((p) => p.dealer_id === id) || db.expenses.some((e) => e.dealer_id === id))
+    fail('This is still in use (it has rounds or payments), so it cannot be deleted.')
+  db.dealers = db.dealers.filter((x) => x !== d)
+  audit('dealers', 'DELETE', d, null)
+  commit('dealers')
+}
+
+export async function getDealerLedger(dealerId: string): Promise<{
+  rounds: DealerRound[]
+  pay: (Expense & { game_name: string; game_date: string })[]
+  payments: DealerPayment[]
+}> {
+  await latency()
+  const games = new Map(db.games.map((g) => [g.id, g]))
+  const newest = <T extends { created_at: string }>(rows: T[]) => [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at))
+  return copy({
+    rounds: newest(db.dealer_tips.filter((t) => t.dealer_id === dealerId)).map((t) => ({
+      ...t,
+      game_name: games.get(t.game_id)?.name ?? '',
+      game_date: games.get(t.game_id)?.game_date ?? '',
+      tip_tax_pct: games.get(t.game_id)?.tip_tax_pct ?? 0,
+    })),
+    pay: newest(db.expenses.filter((e) => e.dealer_id === dealerId)).map((e) => ({
+      ...e,
+      game_name: games.get(e.game_id)?.name ?? '',
+      game_date: games.get(e.game_id)?.game_date ?? '',
+    })),
+    payments: newest(db.dealer_payments.filter((p) => p.dealer_id === dealerId)),
+  })
+}
+
+export async function addDealerPayment(p: DealerPaymentInput) {
+  await latency()
+  find(db.dealers, p.dealer_id)
+  validAmount(p.amount, false)
+  const row: DealerPayment = { ...p, id: sampleId(), created_at: now(), updated_at: null }
+  db.dealer_payments.push(row)
+  audit('dealer_payments', 'INSERT', null, row)
+  commit('dealer_payments', 'dealers')
+}
+
+export async function deleteDealerPayment(id: string) {
+  await latency()
+  const p = find(db.dealer_payments, id)
+  db.dealer_payments = db.dealer_payments.filter((x) => x !== p)
+  audit('dealer_payments', 'DELETE', p, null)
+  commit('dealer_payments', 'dealers')
 }
 
 // ---------------------------------------------------------------- house rules (on the organization)
@@ -828,10 +1018,12 @@ export async function listAudit(f: AuditFilter = {}): Promise<AuditEntry[]> {
     db.audit
       .filter(
         (e) =>
+          (f.accountsOnly ? !e.org_id : f.inOrg ? e.org_id === f.inOrg : f.everywhere || e.org_id === db.org.id) &&
           (!f.gameId || e.game_id === f.gameId) &&
           (!f.playerId || e.player_id === f.playerId) &&
           (!f.partnerId || e.partner_id === f.partnerId) &&
-          (!f.actorEmail || e.actor_email === f.actorEmail) &&
+          (!f.dealerId || e.dealer_id === f.dealerId) &&
+          (!f.actorId || e.actor_id === f.actorId) &&
           (!f.table || e.table_name === f.table) &&
           (!f.beforeId || e.id < f.beforeId),
       )

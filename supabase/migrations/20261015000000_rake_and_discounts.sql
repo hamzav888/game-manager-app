@@ -24,7 +24,7 @@ begin
     select 1 from information_schema.columns
     where table_schema = 'public' and table_name = 'dealer_tips' and column_name = 'rake'
   ) then
-    raise exception 'This upgrade is already installed, so there is nothing to do. (Did you click Run twice?)';
+    raise exception 'The rake & discounts upgrade (20261015000000_rake_and_discounts.sql) is already installed, so there is nothing to do. Next: 20261016000000_usernames_dealers_history.sql.';
   end if;
 end $$;
 

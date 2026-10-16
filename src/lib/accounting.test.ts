@@ -17,7 +17,7 @@ const tx = (player_id: string, kind: Transaction['kind'], amount: number, method
   updated_at: null,
 })
 const tip = (dealer_name: string, amount: number, rake = 0): DealerTip => ({
-  id: `d${seq}`, game_id: 'g', dealer_name, amount, rake, note: null, created_at: at(), updated_at: null,
+  id: `d${seq}`, game_id: 'g', dealer_id: dealer_name.trim().toLowerCase(), dealer_name, amount, rake, method: 'cash', note: null, created_at: at(), updated_at: null,
 })
 const exp = (amount: number, paid_by: string, category: Expense['category'] = 'food'): Expense => ({
   id: `e${seq}`, game_id: 'g', category, description: null, amount, partner_id: null, paid_by, created_at: at(), updated_at: null,

@@ -6,6 +6,9 @@ export interface AuditContext {
   playerName: (id: string | null | undefined) => string | null
   gameName?: (id: string | null | undefined) => string | null
   partnerName?: (id: string | null | undefined) => string | null
+  dealerName?: (id: string | null | undefined) => string | null
+  /** organization name (the owner's all-organizations view) */
+  orgName?: (id: string | null | undefined) => string | null
   /** member name by account id (for membership changes) */
   memberName?: (userId: string | null | undefined) => string | null
   actorName: (email: string | null) => string
@@ -29,6 +32,8 @@ const amt = (v: unknown) => money(Number(v ?? 0))
 const FIELD_LABELS: Record<string, string> = {
   amount: 'Amount',
   rake: 'Rake',
+  username: 'Username',
+  approved: 'Access',
   method: 'Method',
   note: 'Note',
   dealer_name: 'Dealer',
@@ -65,7 +70,10 @@ const KIND_LABELS: Record<string, string> = {
 // Which fields to show (in order) for a whole record.
 const RECORD_FIELDS: Record<string, string[]> = {
   transactions: ['kind', 'amount', 'method', 'note'],
-  dealer_tips: ['dealer_name', 'rake', 'amount', 'note'],
+  dealer_tips: ['dealer_name', 'rake', 'amount', 'method', 'note'],
+  dealers: ['name', 'phone', 'notes'],
+  dealer_payments: ['direction', 'amount', 'method', 'note'],
+  profiles: ['username', 'display_name', 'approved'],
   expenses: ['category', 'description', 'amount', 'paid_by'],
   player_payments: ['direction', 'amount', 'method', 'note'],
   partner_entries: ['kind', 'amount', 'method', 'note'],
@@ -79,18 +87,27 @@ const RECORD_FIELDS: Record<string, string[]> = {
 
 const IGNORED = new Set([
   'id', 'created_at', 'created_by', 'updated_at', 'updated_by', 'closed_at', 'closed_by', 'game_id', 'player_id', 'partner_id',
-  'org_id', 'user_id', 'org_name', 'token', 'accepted_by', 'accepted_at',
+  'org_id', 'user_id', 'org_name', 'token', 'accepted_by', 'accepted_at', 'dealer_id', 'approved_at', 'approved_by',
 ])
 
 /** Per-table names for a field, where the generic one would mislead. */
 const TABLE_LABELS: Record<string, Record<string, string>> = {
-  dealer_tips: { amount: 'Tips' },
+  dealer_tips: { amount: 'Tips', method: 'Tips paid' },
+  profiles: { display_name: 'Name' },
+}
+/** Fields that change as a side effect and would only be noise in a diff. */
+const TABLE_IGNORED: Record<string, string[]> = {
+  profiles: ['email'],
 }
 const labelFor = (table: string, key: string) => TABLE_LABELS[table]?.[key] ?? FIELD_LABELS[key] ?? key
 
 function fieldValue(key: string, v: unknown, table?: string): string {
   if (key === 'amount' || key === 'rake') return amt(v)
   if (key === 'loss_discount_pct' && table === 'players') return v === null || v === undefined ? 'House rate' : Number(v) === 0 ? 'None' : `${Number(v)}%`
+  if (key === 'method' && table === 'dealer_tips') return v === 'account' ? 'Owed to the dealer' : methodLabel(str(v))
+  if (key === 'approved') return v ? 'Approved' : 'Not approved'
+  if (key === 'username') return v ? `@${String(v)}` : '—'
+  if (key === 'direction' && (v === 'to_dealer' || v === 'from_dealer')) return v === 'to_dealer' ? 'We paid the dealer' : 'The dealer paid us'
   if (key === 'method') return methodLabel(str(v))
   if (key === 'category') return categoryLabel(str(v))
   if (key === 'active') return v ? 'Yes' : 'No'
@@ -108,7 +125,7 @@ function diff(table: string, oldRow: Row | null, newRow: Row | null): string[] {
   if (!oldRow || !newRow) return []
   const out: string[] = []
   for (const key of Object.keys(newRow)) {
-    if (IGNORED.has(key)) continue
+    if (IGNORED.has(key) || TABLE_IGNORED[table]?.includes(key)) continue
     const a = oldRow[key]
     const b = newRow[key]
     if (JSON.stringify(a ?? null) === JSON.stringify(b ?? null)) continue
@@ -137,6 +154,11 @@ export function describeAudit(e: AuditEntry, ctx: AuditContext): DescribedAudit 
   if (e.player_id && e.table_name !== 'players') details.push({ label: 'Player', value: player })
   const partnerName = e.table_name !== 'partners' ? ctx.partnerName?.(e.partner_id) : null
   if (partnerName) details.push({ label: 'Partner', value: partnerName })
+  const dealer = e.table_name !== 'dealers' ? ctx.dealerName?.(e.dealer_id) : null
+  if (dealer && e.table_name !== 'dealer_tips') details.push({ label: 'Dealer', value: dealer })
+  const orgName = ctx.orgName?.(e.org_id)
+  if (orgName) details.push({ label: 'Organization', value: orgName })
+  const who = (v: unknown) => (v ? `@${String(v)}` : 'an account')
   const inGame = ctx.gameName?.(e.game_id) ? ` in ${ctx.gameName(e.game_id)}` : ''
 
   let summary: string
@@ -166,7 +188,7 @@ export function describeAudit(e: AuditEntry, ctx: AuditContext): DescribedAudit 
         .join(', ')
       summary =
         e.action === 'INSERT'
-          ? `${str(row.dealer_name)}’s round: ${parts}`
+          ? `${str(row.dealer_name)}’s round: ${parts}${row.method === 'account' && Number(row.amount ?? 0) > 0 ? ' (tips owed)' : ''}`
           : e.action === 'UPDATE'
             ? `Edited ${str(row.dealer_name)}’s round`
             : `Deleted ${str(row.dealer_name)}’s round (${parts})`
@@ -227,6 +249,36 @@ export function describeAudit(e: AuditEntry, ctx: AuditContext): DescribedAudit 
       summary = e.action === 'DELETE' ? `Deleted payment — ${what}` : what
       break
     }
+    case 'dealers': {
+      const name = str(row.name)
+      summary =
+        e.action === 'INSERT' ? `Opened a dealer account for ${name}` : e.action === 'UPDATE' ? `Edited dealer ${name}` : `Removed dealer ${name}`
+      break
+    }
+    case 'dealer_payments': {
+      const name = ctx.dealerName?.(e.dealer_id) ?? 'the dealer'
+      const what = row.direction === 'to_dealer' ? `Paid ${name} ${amt(row.amount)}` : `${name} paid the house ${amt(row.amount)}`
+      summary = e.action === 'DELETE' ? `Deleted payment — ${what}` : what
+      break
+    }
+    case 'profiles': {
+      const changed = (k: string) => e.old_data && e.new_data && JSON.stringify(e.old_data[k] ?? null) !== JSON.stringify(e.new_data[k] ?? null)
+      if (e.action === 'INSERT') summary = `Created the account ${who(row.username)}`
+      else if (e.action === 'DELETE') summary = `Deleted the account ${who(row.username)}`
+      else if (changed('approved')) summary = e.new_data?.approved ? `Approved ${who(row.username)}` : `Blocked ${who(row.username)}`
+      else if (changed('username')) summary = `Changed the login ${who(e.old_data?.username)} to ${who(e.new_data?.username)}`
+      else summary = `Edited the account ${who(row.username)}`
+      break
+    }
+    case 'passwords':
+      summary = row.by === 'self' ? 'Changed their own password' : `Set a new password for ${who(row.username)}`
+      break
+    case 'sign_ins':
+      summary = `${who(row.username)} signed in`
+      break
+    case 'app_admins':
+      summary = e.action === 'DELETE' ? 'Removed an app owner' : 'Made an account the app owner'
+      break
     case 'organizations':
       summary =
         e.action === 'INSERT' ? `Created the organization “${str(row.name)}”` : e.action === 'UPDATE' ? 'Changed organization settings' : 'Deleted the organization'

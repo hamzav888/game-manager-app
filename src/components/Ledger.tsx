@@ -121,7 +121,7 @@ function EntrySheet({
             Open game <Icon name="next" className="size-4" />
           </Link>
         )}
-        {onDelete && (row.source === 'player_payment' || row.source === 'partner_entry') && (
+        {onDelete && (row.source === 'player_payment' || row.source === 'partner_entry' || row.source === 'dealer_payment') && (
           <Button
             variant="danger"
             icon="trash"
@@ -137,6 +137,7 @@ function EntrySheet({
       {row.source === 'transaction' && (
         <p className="mt-4 text-xs text-faint">Buy-ins and cash-outs are corrected from the game they belong to.</p>
       )}
+      {row.source === 'dealer_round' && <p className="mt-4 text-xs text-faint">Rounds are corrected from the game they belong to.</p>}
     </Sheet>
   )
 }

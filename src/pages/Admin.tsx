@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useAuth } from '../auth'
+import { ActivityList } from '../components/ActivityList'
 import { Icon } from '../components/Icon'
 import { Logo } from '../components/Layout'
 import {
@@ -28,34 +29,45 @@ import {
   adminCreateAccount,
   adminListAccounts,
   adminListOrganizations,
+  adminNames,
   adminOrgMembers,
   adminRemoveMember,
   adminRenameOrganization,
   adminSetApproved,
   adminSetPassword,
+  adminSetUsername,
   adminUpdateMember,
   createOrganization,
 } from '../lib/api'
 import { formatStamp, timeAgo } from '../lib/format'
 import { useLoader, useRealtime } from '../lib/hooks'
 import { isSample } from '../lib/mode'
-import type { AdminAccount, AdminOrg, Member, Role } from '../lib/types'
+import type { AdminAccount, AdminOrg, AuditFilter, Member, Role } from '../lib/types'
+import { USERNAME_RE, USERNAME_RULE, cleanUsername, loginName } from '../lib/username'
 
 const ROLES: { value: Role; label: string }[] = [
   { value: 'organizer', label: 'Organizer' },
   { value: 'admin', label: 'Admin' },
 ]
 
-/** 12 easy-to-read characters (no 0/O, 1/l/I). */
+/** 8 easy-to-read characters (no 0/O, 1/l/I). */
 function generatePassword(): string {
-  const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789'
-  const bytes = crypto.getRandomValues(new Uint32Array(12))
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789'
+  const bytes = crypto.getRandomValues(new Uint32Array(8))
   return Array.from(bytes, (b) => chars[b % chars.length]).join('')
 }
 
+/** "Big Rob" → "bigrob" */
+const suggestUsername = (name: string) => name.toLowerCase().replace(/[^a-z0-9._-]/g, '').replace(/^[._-]+/, '').slice(0, 32)
+
+/** How an account is shown: name, or @username. */
+const accountName = (a: { display_name: string | null; username: string | null; email: string | null }) =>
+  a.display_name || (a.username ? `@${a.username}` : (a.email ?? 'Account'))
+const handle = (a: { username: string | null; email: string | null }) => (a.username ? `@${a.username}` : (loginName(a.email) ?? ''))
+
 function PasswordField({ value, onChange, label = 'Password' }: { value: string; onChange: (v: string) => void; label?: string }) {
   return (
-    <Field label={label} hint="At least 8 characters. They can change it later from their account menu.">
+    <Field label={label} hint="Any length you like. They can change it later from their account menu.">
       <div className="flex gap-2">
         <TextInput value={value} onChange={(e) => onChange(e.target.value)} autoComplete="new-password" className="font-mono" />
         <Button onClick={() => onChange(generatePassword())}>Generate</Button>
@@ -64,12 +76,12 @@ function PasswordField({ value, onChange, label = 'Password' }: { value: string;
   )
 }
 
-const loginText = (email: string, password: string) =>
-  `Your Poker Ledger login\n${window.location.origin}\nEmail: ${email}\nPassword: ${password}\n(You can change the password after signing in: tap your avatar → Change password.)`
+const loginText = (username: string, password: string) =>
+  `Your Poker Ledger login\n${window.location.origin}\nUsername: ${username}\nPassword: ${password}\n(You can change the password after signing in: tap your avatar → Change password.)`
 
-function CredentialsSheet({ email, password, title, onClose }: { email: string; password: string; title: string; onClose: () => void }) {
+function CredentialsSheet({ username, password, title, onClose }: { username: string; password: string; title: string; onClose: () => void }) {
   const { toast } = useFeedback()
-  const text = loginText(email, password)
+  const text = loginText(username, password)
   return (
     <Sheet open onClose={onClose} title={title} subtitle="Send these to them however you like — text, WhatsApp, in person.">
       <pre className="whitespace-pre-wrap rounded-[12px] border border-line bg-bg p-3 font-mono text-[12.5px] leading-relaxed">{text}</pre>
@@ -107,25 +119,27 @@ function CreateAccountSheet({
 }: {
   orgs: AdminOrg[]
   onClose: () => void
-  onCreated: (email: string, password: string) => void
+  onCreated: (username: string, password: string) => void
 }) {
   const { refresh } = useAuth()
   const { busy, run } = useAction()
   const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
+  const [touched, setTouched] = useState(false)
   const [password, setPassword] = useState(generatePassword)
   const [org, setOrg] = useState('')
   const [role, setRole] = useState<Role>('organizer')
-  const valid = name.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) && password.length >= 8
+  const login = cleanUsername(touched ? username : suggestUsername(name))
+  const valid = name.trim() && USERNAME_RE.test(login) && password.length > 0
 
   const submit = async () => {
     const ok = await run(async () => {
-      await adminCreateAccount({ name, email, password })
-      if (org) await adminAddMember(org, email, role)
+      await adminCreateAccount({ name, username: login, password })
+      if (org) await adminAddMember(org, login, role)
     }, 'Account created')
     if (ok) {
       void refresh()
-      onCreated(email.trim().toLowerCase(), password)
+      onCreated(login, password)
     }
   }
 
@@ -144,8 +158,18 @@ function CreateAccountSheet({
         <Field label="Name">
           <TextInput value={name} onChange={(e) => setName(e.target.value)} maxLength={60} autoFocus placeholder="e.g. Jordan" />
         </Field>
-        <Field label="Email (their login)">
-          <TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoCapitalize="none" placeholder="name@example.com" />
+        <Field label="Username (their login)" hint={login && !USERNAME_RE.test(login) ? USERNAME_RULE : 'Only you can create accounts. They sign in with this and the password.'}>
+          <TextInput
+            value={touched ? username : login}
+            onChange={(e) => {
+              setTouched(true)
+              setUsername(e.target.value)
+            }}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder="e.g. jordan"
+          />
         </Field>
         <PasswordField value={password} onChange={setPassword} />
         <Field label="Add to an organization (optional)">
@@ -172,13 +196,15 @@ function AccountSheet({ account, onClose, onChanged }: { account: AdminAccount; 
   const { confirm } = useFeedback()
   const { busy, run } = useAction()
   const [password, setPassword] = useState('')
+  const [username, setUsername] = useState(account.username ?? '')
   const [shown, setShown] = useState<string | null>(null)
-  const name = account.display_name || account.email || 'Account'
+  const name = accountName(account)
+  const newLogin = cleanUsername(username)
 
-  if (shown) return <CredentialsSheet title="New password set" email={account.email ?? ''} password={shown} onClose={onClose} />
+  if (shown) return <CredentialsSheet title="New password set" username={account.username ?? account.email ?? ''} password={shown} onClose={onClose} />
 
   return (
-    <Sheet open onClose={onClose} title={name} subtitle={account.email}>
+    <Sheet open onClose={onClose} title={name} subtitle={handle(account)}>
       <div className="flex flex-wrap gap-2">
         {account.is_owner && <Badge tone="brass">App owner</Badge>}
         {account.approved ? <Badge tone="live">Approved</Badge> : <Badge tone="warn">Waiting for approval</Badge>}
@@ -203,11 +229,28 @@ function AccountSheet({ account, onClose, onChanged }: { account: AdminAccount; 
         </Button>
       )}
 
+      <SectionTitle>Username</SectionTitle>
+      <Field label="Their login" hint={newLogin && !USERNAME_RE.test(newLogin) ? USERNAME_RULE : 'They sign in with this. Changing it changes their login.'}>
+        <div className="flex gap-2">
+          <TextInput value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+          {newLogin !== (account.username ?? '') && (
+            <Button
+              variant="primary"
+              disabled={!USERNAME_RE.test(newLogin)}
+              loading={busy}
+              onClick={() => run(() => adminSetUsername(account.id, newLogin), 'Username changed').then((ok) => ok && onChanged())}
+            >
+              Save
+            </Button>
+          )}
+        </div>
+      </Field>
+
       <SectionTitle>Set a new password</SectionTitle>
       <PasswordField value={password} onChange={setPassword} label="New password" />
       <Button
         className="mt-3 w-full"
-        disabled={password.length < 8}
+        disabled={password.length === 0}
         loading={busy}
         onClick={() => run(() => adminSetPassword(account.id, password), 'Password updated').then((ok) => ok && setShown(password))}
       >
@@ -233,7 +276,57 @@ function AccountSheet({ account, onClose, onChanged }: { account: AdminAccount; 
           <Icon name="lock" className="size-4" /> Block this account
         </button>
       )}
+
+      <SectionTitle>Everything they’ve done</SectionTitle>
+      <AdminHistory filter={{ everywhere: true, actorId: account.id }} />
     </Sheet>
+  )
+}
+
+/** Owner only: the history across every organization, with names. */
+function AdminHistory({ filter }: { filter: Omit<AuditFilter, 'beforeId' | 'limit'> }) {
+  const book = useLoader(adminNames, [])
+  if (book.error) return <ErrorBox error={book.error} onRetry={book.reload} />
+  if (!book.data) return <Loading />
+  return <ActivityList filter={filter} playersById={new Map()} book={book.data} live />
+}
+
+function HistoryTab({ accounts, orgs }: { accounts: AdminAccount[]; orgs: AdminOrg[] }) {
+  const [who, setWho] = useState('')
+  const [where, setWhere] = useState('')
+  const filter: Omit<AuditFilter, 'beforeId' | 'limit'> = {
+    ...(who && { actorId: who }),
+    ...(where === 'accounts' ? { accountsOnly: true } : where ? { inOrg: where } : { everywhere: true }),
+  }
+  return (
+    <>
+      <p className="mt-5 text-sm text-muted">
+        Every action by every account, to the second: games, money, members, accounts created or changed, passwords set (never the passwords
+        themselves) and sign-ins. Only you can see this, and nobody — including you — can edit or delete it.
+      </p>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <select className={cx(inputCls, 'h-10 text-base sm:text-sm')} value={who} onChange={(e) => setWho(e.target.value)} aria-label="Done by">
+          <option value="">Every account</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {accountName(a)} {a.username && a.display_name ? `(@${a.username})` : ''}
+            </option>
+          ))}
+        </select>
+        <select className={cx(inputCls, 'h-10 text-base sm:text-sm')} value={where} onChange={(e) => setWhere(e.target.value)} aria-label="Where">
+          <option value="">Everywhere</option>
+          <option value="accounts">Accounts &amp; sign-ins</option>
+          {orgs.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="mt-5">
+        <AdminHistory filter={filter} />
+      </div>
+    </>
   )
 }
 
@@ -279,7 +372,7 @@ function NewOrgSheet({ accounts, onClose, onCreated }: { accounts: AdminAccount[
           <select className={cx(inputCls, 'h-11')} value={admin} onChange={(e) => setAdmin(e.target.value)}>
             {approved.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.id === user?.id ? `Me (${a.email})` : `${a.display_name || a.email} — ${a.email}`}
+                {a.id === user?.id ? `Me (${handle(a)})` : `${accountName(a)} — ${handle(a)}`}
               </option>
             ))}
           </select>
@@ -308,7 +401,7 @@ function OrgSheet({ org, accounts, onClose, onChanged }: { org: AdminOrg; accoun
   }
 
   const memberAction = async (m: Member, action: 'role' | 'pause' | 'remove') => {
-    const who = m.display_name || m.email || 'this member'
+    const who = m.display_name || (m.username ? `@${m.username}` : 'this member')
     if (action === 'remove' && !(await confirm({ title: `Remove ${who}?`, message: 'They lose access to this organization. Their history stays.', confirmLabel: 'Remove', danger: true })))
       return
     await run(
@@ -344,13 +437,13 @@ function OrgSheet({ org, accounts, onClose, onChanged }: { org: AdminOrg; accoun
         <div className="divide-y divide-line rounded-[12px] border border-line">
           {members.data.map((m) => (
             <div key={m.user_id} className="flex items-center gap-3 px-3 py-2.5">
-              <Avatar name={m.display_name || m.email || '?'} size={32} />
+              <Avatar name={m.display_name || m.username || '?'} size={32} />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">
-                  {m.display_name || m.email}
+                  {m.display_name || `@${m.username}`}
                   {m.user_id === user?.id && <span className="font-normal text-faint"> · you</span>}
                 </span>
-                <span className="block truncate text-xs text-muted">{m.email}</span>
+                <span className="block truncate text-xs text-muted">{handle(m)}</span>
               </span>
               <button
                 type="button"
@@ -363,7 +456,7 @@ function OrgSheet({ org, accounts, onClose, onChanged }: { org: AdminOrg; accoun
               <button type="button" onClick={() => void memberAction(m, 'pause')} className="shrink-0 text-xs text-muted underline-offset-2 hover:underline">
                 {m.active ? 'Pause' : 'Resume'}
               </button>
-              <button type="button" aria-label={`Remove ${m.display_name || m.email}`} onClick={() => void memberAction(m, 'remove')} className="shrink-0 text-faint hover:text-loss">
+              <button type="button" aria-label={`Remove ${m.display_name || m.username}`} onClick={() => void memberAction(m, 'remove')} className="shrink-0 text-faint hover:text-loss">
                 <Icon name="x" className="size-4" />
               </button>
             </div>
@@ -380,8 +473,8 @@ function OrgSheet({ org, accounts, onClose, onChanged }: { org: AdminOrg; accoun
           <select className={cx(inputCls, 'h-11')} value={adding} onChange={(e) => setAdding(e.target.value)}>
             <option value="">Choose an account…</option>
             {candidates.map((a) => (
-              <option key={a.id} value={a.email ?? ''}>
-                {a.display_name || a.email} — {a.email}
+              <option key={a.id} value={a.username ?? a.email ?? ''}>
+                {accountName(a)} — {handle(a)}
               </option>
             ))}
           </select>
@@ -417,7 +510,7 @@ function OrgSheet({ org, accounts, onClose, onChanged }: { org: AdminOrg; accoun
 
 export function AdminPage() {
   const { user, orgs } = useAuth()
-  const [tab, setTab] = useState<'orgs' | 'accounts'>('orgs')
+  const [tab, setTab] = useState<'orgs' | 'accounts' | 'history'>('orgs')
   const accounts = useLoader(adminListAccounts, [])
   const orgList = useLoader(adminListOrganizations, [])
   const reload = () => {
@@ -428,7 +521,7 @@ export function AdminPage() {
 
   const [creatingAccount, setCreatingAccount] = useState(false)
   const [creatingOrg, setCreatingOrg] = useState(false)
-  const [credentials, setCredentials] = useState<{ email: string; password: string } | null>(null)
+  const [credentials, setCredentials] = useState<{ username: string; password: string } | null>(null)
   const [openAccount, setOpenAccount] = useState<AdminAccount | null>(null)
   const [openOrg, setOpenOrg] = useState<AdminOrg | null>(null)
 
@@ -437,7 +530,7 @@ export function AdminPage() {
 
   return (
     <>
-      <PageHeader title="Admin" sub="Every account and organization. Only you see this." />
+      <PageHeader title="Admin" sub="Every account, organization and action. Only you see this." />
 
       {orgs.filter((o) => o.active).length === 0 && (
         <div className="mt-5 rounded-[12px] border border-brass/30 bg-brass/[0.07] px-4 py-3 text-sm text-brass">
@@ -452,6 +545,7 @@ export function AdminPage() {
           options={[
             { value: 'orgs', label: `Organizations${orgList.data ? ` · ${orgList.data.length}` : ''}` },
             { value: 'accounts', label: `Accounts${accounts.data ? ` · ${accounts.data.length}` : ''}` },
+            { value: 'history', label: 'History' },
           ]}
         />
       </div>
@@ -514,7 +608,7 @@ export function AdminPage() {
                   <SectionTitle>Waiting for approval · {pending.length}</SectionTitle>
                   <AccountList accounts={pending} onOpen={setOpenAccount} me={user?.id} />
                   <p className="mt-2 px-1 text-xs text-faint">
-                    Accounts you didn’t create (for example, someone signing in with Google) wait here. They can’t see anything until you approve them.
+                    Accounts you didn’t create wait here. They can’t see anything until you approve them.
                   </p>
                 </>
               )}
@@ -525,14 +619,16 @@ export function AdminPage() {
         </>
       )}
 
+      {tab === 'history' && (accounts.data && orgList.data ? <HistoryTab accounts={accounts.data} orgs={orgList.data} /> : <Loading />)}
+
       {creatingOrg && accounts.data && <NewOrgSheet accounts={accounts.data} onClose={() => setCreatingOrg(false)} onCreated={() => (setCreatingOrg(false), reload())} />}
       {creatingAccount && (
         <CreateAccountSheet
           orgs={orgList.data ?? []}
           onClose={() => setCreatingAccount(false)}
-          onCreated={(email, password) => {
+          onCreated={(username, password) => {
             setCreatingAccount(false)
-            setCredentials({ email, password })
+            setCredentials({ username, password })
             reload()
           }}
         />
@@ -549,13 +645,16 @@ function AccountList({ accounts, onOpen, me }: { accounts: AdminAccount[]; onOpe
     <Card className="divide-y divide-line overflow-hidden">
       {accounts.map((a) => (
         <button key={a.id} type="button" onClick={() => onOpen(a)} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2/60">
-          <Avatar name={a.display_name || a.email || '?'} />
+          <Avatar name={a.display_name || a.username || '?'} />
           <span className="min-w-0 flex-1">
             <span className="block truncate font-medium">
-              {a.display_name || a.email}
+              {accountName(a)}
               {a.id === me && <span className="font-normal text-faint"> · you</span>}
             </span>
-            <span className="block truncate text-[13px] text-muted">{a.organizations || a.email}</span>
+            <span className="block truncate text-[13px] text-muted">
+              {handle(a)}
+              {a.organizations && ` · ${a.organizations}`}
+            </span>
           </span>
           <span className="shrink-0 text-right text-[11px] text-faint">
             {a.is_owner ? <Badge tone="brass">Owner</Badge> : a.last_sign_in_at ? timeAgo(a.last_sign_in_at) : 'never signed in'}
@@ -568,14 +667,14 @@ function AccountList({ accounts, onOpen, me }: { accounts: AdminAccount[]; onOpe
 
 /** The owner's view when they aren't in any organization yet. */
 export function AdminStandalone({ children }: { children?: ReactNode }) {
-  const { signOut, user } = useAuth()
+  const { signOut, user, username } = useAuth()
   return (
     <div className="min-h-dvh">
       <header className="pt-safe sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-xl">
         <div className="mx-auto flex h-14 max-w-3xl items-center gap-3 px-4">
           <Logo />
           <span className="font-display text-[22px] leading-none">Poker Ledger</span>
-          <span className="ml-auto truncate text-xs text-muted">{user?.email}</span>
+          <span className="ml-auto truncate text-xs text-muted">{username ? `@${username}` : user?.email}</span>
           <Button size="sm" icon="logout" onClick={() => void signOut()}>
             Sign out
           </Button>

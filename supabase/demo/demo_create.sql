@@ -8,6 +8,7 @@
 -- app owner) as its admin, filled with made-up data:
 --   * 14 players (one with his own 15% loss discount, one with none)
 --   * 3 partners splitting the profit 40 / 35 / 25
+--   * 3 dealers with accounts (one is paid his tips monthly, so he's owed some)
 --   * 8 weekly games that have ended, with buy-ins, rebuys, cash-outs,
 --     loss discounts, dealer rounds (rake + tips), expenses, profit shares,
 --     partner payouts and player payments
@@ -15,17 +16,17 @@
 --
 -- Nothing outside that organization is touched: your real organizations,
 -- players, games and accounts stay exactly as they are, and no logins are
--- created. To delete it all again, run demo_remove.sql.
+-- created. Its history is dated to match the made-up season and, like all
+-- history, can never be edited or deleted. To delete the demo organization
+-- itself again, run demo_remove.sql.
 -- =====================================================================
 
 begin;
 
 do $$
 begin
-  if to_regclass('public.app_admins') is null
-     or not exists (select 1 from information_schema.columns
-                    where table_schema = 'public' and table_name = 'dealer_tips' and column_name = 'rake') then
-    raise exception 'Run all three files in supabase/migrations first, then this one.';
+  if to_regclass('public.dealers') is null then
+    raise exception 'Run all four files in supabase/migrations first, then this one.';
   end if;
   if not exists (select 1 from public.app_admins) then
     raise exception 'There is no app owner yet. Create your owner account first (SETUP.md, step 4).';
@@ -46,6 +47,8 @@ alter table public.dealer_tips     disable trigger b_stamp;
 alter table public.expenses        disable trigger b_stamp;
 alter table public.player_payments disable trigger b_stamp;
 alter table public.partner_entries disable trigger b_stamp;
+alter table public.dealers         disable trigger b_stamp;
+alter table public.dealer_payments disable trigger b_stamp;
 
 -- Everything that happens, collected first and then replayed in time order,
 -- so the history reads like a real season.
@@ -65,6 +68,8 @@ declare
                             'Chris', 'Sana', 'Vik', 'Theo', 'Nadia', 'Hector'];
   v_credit  text[] := array['Big Rob', 'Tariq'];
   v_dealers text[] := array['Marco', 'Lucy', 'Andre'];
+  v_dealer  uuid[] := array[gen_random_uuid(), gen_random_uuid(), gen_random_uuid()];
+  v_d       int;
   v_foods   text[] := array['Pizza', 'Wings & fries', 'Shawarma platters', 'Tacos'];
   v_partner uuid[] := array[gen_random_uuid(), gen_random_uuid(), gen_random_uuid()];
   v_pnames  text[] := array['Sam', 'Jordan', 'Priya'];
@@ -101,8 +106,10 @@ declare
   r5 constant numeric := 5;
 begin
   select a.user_id into v_owner from public.app_admins a order by a.created_at limit 1;
-  -- Record everything as done by the owner (shows in the history).
+  -- Record everything as done by the owner (shows in the history), dated
+  -- to when it "happened" in the made-up season.
   perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  perform set_config('poker_ledger.event_time', (v_founded - interval '5 minutes')::text, true);
   perform setseed(0.2026);
 
   insert into public.organizations (id, name, tip_tax_pct, loss_discount_pct)
@@ -114,6 +121,12 @@ begin
     insert into demo_events (at, tbl, row) values (v_founded, 'partners', jsonb_build_object(
       'id', v_partner[i], 'org_id', v_org, 'name', v_pnames[i], 'share_pct', (array[40, 35, 25])[i],
       'active', true, 'created_at', v_founded, 'created_by', v_owner));
+  end loop;
+  for i in 1..3 loop
+    insert into demo_events (at, tbl, row) values (v_founded + interval '10 minutes', 'dealers', jsonb_build_object(
+      'id', v_dealer[i], 'org_id', v_org, 'name', v_dealers[i], 'active', true,
+      'notes', case when i = 3 then 'Weekend shifts. Takes his tips by transfer at the end of the month.' end,
+      'created_at', v_founded, 'created_by', v_owner));
   end loop;
   insert into demo_events (at, tbl, row) values (v_founded + interval '20 minutes', 'partner_entries', jsonb_build_object(
     'id', gen_random_uuid(), 'partner_id', v_partner[1], 'kind', 'contribution', 'amount', 2000, 'method', 'transfer',
@@ -218,9 +231,12 @@ begin
     v_tparts[v_rounds] := greatest(0, v_tparts[v_rounds] + v_tips - (select sum(x) from unnest(v_tparts) x));
     v_first := 1 + floor(random() * 3)::int;
     for k in 1..v_rounds loop
+      v_d := 1 + (v_first + k - 2) % 3;
+      -- Andre's tips go on his account; he's paid by transfer once a month
       insert into demo_events (at, tbl, row) values (v_t0 + make_interval(mins => 40 + (k - 1) * 40 + floor(random() * 8)::int), 'dealer_tips', jsonb_build_object(
-        'id', gen_random_uuid(), 'game_id', v_game, 'dealer_name', v_dealers[1 + (v_first + k - 2) % 3],
-        'rake', v_rparts[k], 'amount', v_tparts[k], 'created_at', v_t0, 'created_by', v_owner));
+        'id', gen_random_uuid(), 'game_id', v_game, 'dealer_id', v_dealer[v_d], 'dealer_name', v_dealers[v_d],
+        'rake', v_rparts[k], 'amount', v_tparts[k], 'method', case when v_d = 3 then 'account' else 'cash' end,
+        'created_at', v_t0, 'created_by', v_owner));
     end loop;
 
     -- expenses
@@ -236,7 +252,8 @@ begin
     if random() < 0.6 then
       insert into demo_events (at, tbl, row) values (v_t0 + interval '300 minutes', 'expenses', jsonb_build_object(
         'id', gen_random_uuid(), 'game_id', v_game, 'category', 'dealer_pay', 'description', 'Dealer shift',
-        'amount', round((150 + random() * 110) / r5) * r5, 'created_at', v_t0, 'created_by', v_owner));
+        'amount', round((150 + random() * 110) / r5) * r5, 'dealer_id', v_dealer[1 + floor(random() * 3)::int],
+        'created_at', v_t0, 'created_by', v_owner));
     end if;
     if gi = 5 then
       insert into demo_events (at, tbl, row) values (v_t0, 'expenses', jsonb_build_object(
@@ -271,6 +288,15 @@ begin
     end if;
   end loop;
 
+  -- Andre is paid his tips for the month, by transfer.
+  select coalesce(sum((row ->> 'amount')::numeric - round((row ->> 'amount')::numeric * 10 / 100, 2)), 0) into v_owed
+    from demo_events where tbl = 'dealer_tips' and row ->> 'dealer_id' = v_dealer[3]::text and at < (current_date - 20)::timestamptz;
+  if v_owed > 0 then
+    insert into demo_events (at, tbl, row) values ((current_date - 20 + time '16:20') at time zone 'UTC', 'dealer_payments', jsonb_build_object(
+      'id', gen_random_uuid(), 'dealer_id', v_dealer[3], 'direction', 'to_dealer', 'amount', v_owed, 'method', 'transfer',
+      'note', 'Tips for the month', 'created_at', now(), 'created_by', v_owner));
+  end if;
+
   -- ------------------------------------------------ two tables running right now
   v_game := gen_random_uuid();
   insert into demo_events (at, tbl, row) values (now() - interval '200 minutes', 'games', jsonb_build_object(
@@ -293,8 +319,9 @@ begin
     'id', gen_random_uuid(), 'game_id', v_game, 'player_id', v_player[9], 'kind', 'cash_out', 'amount', 1870, 'method', 'transfer', 'created_at', now(), 'created_by', v_owner));
   for k in 1..4 loop
     insert into demo_events (at, tbl, row) values (now() - make_interval(mins => 200 - k * 40), 'dealer_tips', jsonb_build_object(
-      'id', gen_random_uuid(), 'game_id', v_game, 'dealer_name', v_dealers[1 + (k - 1) % 3],
-      'rake', (array[95, 120, 85, 140])[k], 'amount', (array[25, 30, 15, 35])[k], 'created_at', now(), 'created_by', v_owner));
+      'id', gen_random_uuid(), 'game_id', v_game, 'dealer_id', v_dealer[1 + (k - 1) % 3], 'dealer_name', v_dealers[1 + (k - 1) % 3],
+      'rake', (array[95, 120, 85, 140])[k], 'amount', (array[25, 30, 15, 35])[k], 'method', case when k = 3 then 'account' else 'cash' end,
+      'created_at', now(), 'created_by', v_owner));
   end loop;
   insert into demo_events (at, tbl, row) values (now() - interval '150 minutes', 'expenses', jsonb_build_object(
     'id', gen_random_uuid(), 'game_id', v_game, 'category', 'food', 'description', 'Wings & fries', 'amount', 145,
@@ -311,11 +338,17 @@ begin
       'created_at', now(), 'created_by', v_owner));
   end loop;
   insert into demo_events (at, tbl, row) values (now() - interval '52 minutes', 'dealer_tips', jsonb_build_object(
-    'id', gen_random_uuid(), 'game_id', v_game, 'dealer_name', 'Andre', 'rake', 160, 'amount', 40, 'created_at', now(), 'created_by', v_owner));
+    'id', gen_random_uuid(), 'game_id', v_game, 'dealer_id', v_dealer[3], 'dealer_name', 'Andre', 'rake', 160, 'amount', 40,
+    'method', 'account', 'created_at', now(), 'created_by', v_owner));
 
   -- ------------------------------------------------ replay everything in time order
   for e in select * from demo_events order by at, seq loop
+    perform set_config('poker_ledger.event_time', e.at::text, true);
     case e.tbl
+      when 'dealers' then
+        insert into public.dealers select * from jsonb_populate_record(null::public.dealers, e.row || jsonb_build_object('created_at', e.at));
+      when 'dealer_payments' then
+        insert into public.dealer_payments select * from jsonb_populate_record(null::public.dealer_payments, e.row || jsonb_build_object('created_at', e.at));
       when 'partners' then
         insert into public.partners select * from jsonb_populate_record(null::public.partners, e.row || jsonb_build_object('created_at', e.at));
       when 'players' then
@@ -339,27 +372,6 @@ begin
 
 end $$;
 
--- Partner shares were posted "now"; date them to when each game ended.
-alter table public.partner_shares disable trigger z_audit;
-update public.partner_shares s set created_at = g.closed_at
-  from public.games g
-  where g.id = s.game_id and s.org_id = '00000000-0000-4000-8000-00000000de30';
-alter table public.partner_shares enable trigger z_audit;
-
--- Date the history to match.
-update public.audit_log a set occurred_at = (a.new_data ->> 'created_at')::timestamptz
-  where a.org_id = '00000000-0000-4000-8000-00000000de30' and a.action = 'INSERT'
-    and a.table_name not in ('organizations', 'memberships', 'partner_shares');
-update public.audit_log a set occurred_at = (a.new_data ->> 'closed_at')::timestamptz
-  where a.org_id = '00000000-0000-4000-8000-00000000de30' and a.table_name = 'games' and a.action = 'UPDATE';
-update public.audit_log a
-  set occurred_at = g.closed_at,
-      new_data = jsonb_set(a.new_data, '{created_at}', to_jsonb(g.closed_at))
-  from public.games g
-  where a.org_id = '00000000-0000-4000-8000-00000000de30' and a.table_name = 'partner_shares' and g.id = a.game_id;
-update public.audit_log a set occurred_at = date_trunc('day', now()) - interval '75 days' + interval '17 hours' - interval '5 minutes'
-  where a.org_id = '00000000-0000-4000-8000-00000000de30' and a.table_name in ('organizations', 'memberships');
-
 -- Switch the triggers back on.
 alter table public.games           enable trigger b_stamp;
 alter table public.games           enable trigger c_game_defaults;
@@ -370,6 +382,8 @@ alter table public.dealer_tips     enable trigger b_stamp;
 alter table public.expenses        enable trigger b_stamp;
 alter table public.player_payments enable trigger b_stamp;
 alter table public.partner_entries enable trigger b_stamp;
+alter table public.dealers         enable trigger b_stamp;
+alter table public.dealer_payments enable trigger b_stamp;
 
 commit;
 
@@ -379,4 +393,5 @@ select
   (select count(*) from public.games where org_id = '00000000-0000-4000-8000-00000000de30' and status = 'closed') as games_ended,
   (select count(*) from public.games where org_id = '00000000-0000-4000-8000-00000000de30' and status = 'open') as games_running,
   (select count(*) from public.dealer_tips where org_id = '00000000-0000-4000-8000-00000000de30') as dealer_rounds,
+  (select count(*) from public.dealers where org_id = '00000000-0000-4000-8000-00000000de30') as dealers,
   (select sum(net_profit) from public.game_totals where org_id = '00000000-0000-4000-8000-00000000de30' and status = 'closed') as total_profit;

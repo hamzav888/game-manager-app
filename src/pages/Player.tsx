@@ -224,7 +224,7 @@ type View = 'games' | 'ledger' | 'history'
 
 export function PlayerPage() {
   const { id = '' } = useParams()
-  const { org } = useAuth()
+  const { org, isOwner } = useAuth()
   const navigate = useNavigate()
   const { run } = useAction()
   const [view, setView] = useState<View>('games')
@@ -234,7 +234,8 @@ export function PlayerPage() {
   const totals = useLoader(() => getPlayerTotals(id), [id])
   const results = useLoader(() => getPlayerResults(id), [id])
   const account = useLoader(() => getPlayerLedger(id), [id])
-  const stamps = useRecordStamps({ playerId: id })
+  const stampRows = useMemo(() => (account.data ? [...account.data.txs, ...account.data.payments] : []), [account.data])
+  const stamps = useRecordStamps({ playerId: id }, stampRows)
   const roster = useLoader(listPlayers, [])
   const games = useLoader(listGameTotals, [])
   const reloadAll = () => {
@@ -382,7 +383,8 @@ export function PlayerPage() {
           options={[
             { value: 'games', label: 'Games' },
             { value: 'ledger', label: 'Ledger' },
-            { value: 'history', label: 'Change history' },
+            // the history is for the app owner only
+            ...(isOwner ? [{ value: 'history' as const, label: 'Change history' }] : []),
           ]}
         />
       </div>
@@ -459,7 +461,7 @@ export function PlayerPage() {
         </div>
       )}
 
-      {view === 'history' && (
+      {view === 'history' && isOwner && (
         <div className="mt-5">
           <ActivityList filter={{ playerId: p.id }} playersById={playersById} gameNames={gameNames} live />
         </div>

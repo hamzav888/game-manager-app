@@ -1,14 +1,56 @@
 -- Minimal stand-in for the parts of Supabase the schema relies on.
+-- auth.users / auth.identities mirror Supabase's real columns closely enough
+-- that inserting an account the way admin_create_account() does is checked.
 create schema auth;
 create table auth.users (
-  id uuid primary key,
-  email text,
-  email_confirmed_at timestamptz,
-  raw_user_meta_data jsonb default '{}'::jsonb,
-  encrypted_password text,
-  created_at timestamptz default now(),
-  updated_at timestamptz,
-  last_sign_in_at timestamptz
+  instance_id                 uuid,
+  id                          uuid primary key,
+  aud                         varchar(255),
+  role                        varchar(255),
+  email                       varchar(255),
+  encrypted_password          varchar(255),
+  email_confirmed_at          timestamptz,
+  invited_at                  timestamptz,
+  confirmation_token          varchar(255),
+  confirmation_sent_at        timestamptz,
+  recovery_token              varchar(255),
+  recovery_sent_at            timestamptz,
+  email_change_token_new      varchar(255),
+  email_change                varchar(255),
+  email_change_sent_at        timestamptz,
+  last_sign_in_at             timestamptz,
+  raw_app_meta_data           jsonb,
+  raw_user_meta_data          jsonb default '{}'::jsonb,
+  is_super_admin              boolean,
+  created_at                  timestamptz default now(),
+  updated_at                  timestamptz,
+  phone                       text unique default null,
+  phone_confirmed_at          timestamptz,
+  phone_change                text default '',
+  phone_change_token          varchar(255) default '',
+  phone_change_sent_at        timestamptz,
+  confirmed_at                timestamptz generated always as (least(email_confirmed_at, phone_confirmed_at)) stored,
+  email_change_token_current  varchar(255) default '',
+  email_change_confirm_status smallint default 0,
+  banned_until                timestamptz,
+  reauthentication_token      varchar(255) default '',
+  reauthentication_sent_at    timestamptz,
+  is_sso_user                 boolean not null default false,
+  deleted_at                  timestamptz,
+  is_anonymous                boolean not null default false
+);
+create unique index users_email_partial_key on auth.users (email) where is_sso_user = false;
+create table auth.identities (
+  provider_id     text not null,
+  user_id         uuid not null references auth.users (id) on delete cascade,
+  identity_data   jsonb not null,
+  provider        text not null,
+  last_sign_in_at timestamptz,
+  created_at      timestamptz,
+  updated_at      timestamptz,
+  email           text generated always as (lower(identity_data ->> 'email')) stored,
+  id              uuid not null default gen_random_uuid() primary key,
+  unique (provider_id, provider)
 );
 create function auth.uid() returns uuid language sql stable as $$
   select nullif(current_setting('request.jwt.claims', true)::jsonb ->> 'sub', '')::uuid

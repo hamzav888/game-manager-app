@@ -1,10 +1,13 @@
 // Data layer backed by Supabase (PostgREST). Row Level Security does the protecting.
 import type { PostgrestError } from '@supabase/supabase-js'
-import { createClient } from '@supabase/supabase-js'
 import { orgId } from '../org'
-import { supabase, supabaseKey, supabaseUrl } from '../supabase'
+import { supabase } from '../supabase'
 import type {
   AccountTx,
+  Dealer,
+  DealerAccount,
+  DealerPayment,
+  DealerRound,
   AuditEntry,
   AuditFilter,
   DealerTip,
@@ -16,6 +19,7 @@ import type {
   AdminOrg,
   Member,
   MyOrg,
+  NameBook,
   Partner,
   PartnerAccount,
   PartnerEntry,
@@ -79,9 +83,15 @@ const toPlayer = <T extends Player>(p: T): T => ({ ...p, loss_discount_pct: pctO
 
 // ---------------------------------------------------------------- organizations & members
 
-export async function whoAmI(): Promise<{ is_owner: boolean; approved: boolean }> {
-  const rows = (await run(supabase.rpc('whoami'))) as { is_owner: boolean; approved: boolean }[]
-  return rows?.[0] ?? { is_owner: false, approved: false }
+export interface WhoAmI {
+  is_owner: boolean
+  approved: boolean
+  username: string | null
+}
+
+export async function whoAmI(): Promise<WhoAmI> {
+  const rows = (await run(supabase.rpc('whoami'))) as WhoAmI[]
+  return rows?.[0] ?? { is_owner: false, approved: false, username: null }
 }
 
 export const listMyOrganizations = async (): Promise<MyOrg[]> =>
@@ -94,16 +104,23 @@ export const createOrganization = async (name: string, adminUserId?: string | nu
 export const updateOrganization = (patch: { name?: string; tip_tax_pct?: number; loss_discount_pct?: number }) =>
   runChanged(supabase.from('organizations').update(patch).eq('id', orgId()).select('id'))
 
-type MemberRow = Omit<Member, 'email' | 'display_name'> & { profiles: { email: string | null; display_name: string | null } | null }
+type MemberRow = Omit<Member, 'email' | 'display_name' | 'username'> & {
+  profiles: { email: string | null; display_name: string | null; username: string | null } | null
+}
 
-const toMember = ({ profiles, ...m }: MemberRow): Member => ({ ...m, email: profiles?.email ?? null, display_name: profiles?.display_name ?? null })
+const toMember = ({ profiles, ...m }: MemberRow): Member => ({
+  ...m,
+  username: profiles?.username ?? null,
+  email: profiles?.email ?? null,
+  display_name: profiles?.display_name ?? null,
+})
 
 const membersOf = async (org: string): Promise<Member[]> =>
   (
     await run(
       supabase
         .from('memberships')
-        .select('user_id, role, active, created_at, profiles(email, display_name)')
+        .select('user_id, role, active, created_at, profiles(email, display_name, username)')
         .eq('org_id', org)
         .order('created_at')
         .returns<MemberRow[]>(),
@@ -112,9 +129,9 @@ const membersOf = async (org: string): Promise<Member[]> =>
 
 export const listMembers = (): Promise<Member[]> => membersOf(orgId())
 
-/** Add an existing, owner-approved account to the current organization by email. */
-export const addMember = async (email: string, role: Role) => {
-  await run(supabase.rpc('add_member', { p_org: orgId(), p_email: email.trim(), p_role: role }))
+/** Add an existing, owner-approved account to the current organization by username. */
+export const addMember = async (username: string, role: Role) => {
+  await run(supabase.rpc('add_member', { p_org: orgId(), p_login: username.trim(), p_role: role }))
 }
 
 export const updateMember = (userId: string, patch: { role?: Role; active?: boolean }) =>
@@ -127,6 +144,11 @@ export const removeMember = (userId: string) =>
 export const updateMyProfile = (userId: string, patch: { display_name: string | null }) =>
   runChanged(supabase.from('profiles').update(patch).eq('id', userId).select('id'))
 
+/** Change your own password (any length); needs the current one. */
+export const changeMyPassword = async (current: string, next: string) => {
+  await run(supabase.rpc('change_my_password', { p_current: current, p_new: next }))
+}
+
 // ---------------------------------------------------------------- owner (app admin)
 
 export const adminListAccounts = async (): Promise<AdminAccount[]> => (await run(supabase.rpc('admin_accounts'))) as AdminAccount[]
@@ -134,33 +156,23 @@ export const adminListAccounts = async (): Promise<AdminAccount[]> => (await run
 export const adminListOrganizations = async (): Promise<AdminOrg[]> =>
   ((await run(supabase.rpc('admin_organizations'))) as AdminOrg[]).map((o) => num(o, ['members']))
 
-/**
- * Create a login for someone. Without a server we can't use Supabase's admin
- * API, so we sign the new account up through a throwaway client (it never
- * touches your own session) and then approve it.
- */
-export async function adminCreateAccount(a: { email: string; password: string; name: string }): Promise<string> {
-  const temp = createClient(supabaseUrl, supabaseKey, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: 'poker-ledger-admin-create' },
-  })
-  const { data, error } = await temp.auth.signUp({
-    email: a.email.trim().toLowerCase(),
-    password: a.password,
-    options: { data: { display_name: a.name.trim() || undefined } },
-  })
-  if (error) {
-    if (/already registered|already been registered/i.test(error.message)) throw new Error('An account with that email already exists.')
-    if (/signups? not allowed|signup is disabled/i.test(error.message))
-      throw new Error('Supabase is blocking new accounts. Turn on “Allow new users to sign up” (see SETUP.md).')
-    throw new Error(error.message)
-  }
-  const id = data.user?.id
-  // Supabase hides "already exists" when email confirmation is on: no identities come back.
-  if (!id || (data.user?.identities && data.user.identities.length === 0)) throw new Error('An account with that email already exists.')
-  if (!data.session) throw new Error('The account was created but needs email confirmation. Turn off “Confirm email” in Supabase (see SETUP.md).')
-  await temp.auth.signOut().catch(() => undefined)
-  await run(supabase.rpc('admin_set_approved', { p_user: id, p_approved: true }))
-  return id
+/** Owner only: create a login (username + password). Done inside the database. */
+export const adminCreateAccount = async (a: { username: string; password: string; name: string }): Promise<string> =>
+  (await run(
+    supabase.rpc('admin_create_account', { p_username: a.username.trim(), p_password: a.password, p_name: a.name.trim() || null }),
+  )) as string
+
+/** Owner only: names behind the ids in the history, across every organization. */
+export async function adminNames(): Promise<NameBook> {
+  const rows = (await run(supabase.rpc('admin_names'))) as { kind: keyof NameBook; id: string; name: string }[]
+  const book: NameBook = { org: new Map(), player: new Map(), game: new Map(), partner: new Map(), dealer: new Map(), account: new Map() }
+  for (const r of rows) book[r.kind]?.set(r.id, r.name)
+  return book
+}
+
+/** Owner only: change someone's username (their login changes with it). */
+export const adminSetUsername = async (userId: string, username: string) => {
+  await run(supabase.rpc('admin_set_username', { p_user: userId, p_username: username.trim() }))
 }
 
 export const adminSetApproved = async (userId: string, approved: boolean) => {
@@ -173,8 +185,8 @@ export const adminSetPassword = async (userId: string, password: string) => {
 
 export const adminOrgMembers = (org: string): Promise<Member[]> => membersOf(org)
 
-export const adminAddMember = async (org: string, email: string, role: Role) => {
-  await run(supabase.rpc('add_member', { p_org: org, p_email: email.trim(), p_role: role }))
+export const adminAddMember = async (org: string, username: string, role: Role) => {
+  await run(supabase.rpc('add_member', { p_org: org, p_login: username.trim(), p_role: role }))
 }
 
 export const adminUpdateMember = (org: string, userId: string, patch: { role?: Role; active?: boolean }) =>
@@ -296,8 +308,8 @@ export const updateTx = (id: string, patch: Partial<Pick<Transaction, 'amount' |
   runChanged(supabase.from('transactions').update(patch).eq('id', id).select('id'))
 export const deleteTx = (id: string) => runChanged(supabase.from('transactions').delete().eq('id', id).select('id'))
 
-/** One dealer round: tips and rake (either can be 0, not both). */
-export type TipInput = Pick<DealerTip, 'game_id' | 'dealer_name' | 'amount' | 'rake' | 'note'>
+/** One dealer round: tips and rake (either can be 0, not both). A new dealer name opens a dealer account. */
+export type TipInput = Pick<DealerTip, 'game_id' | 'dealer_name' | 'amount' | 'rake' | 'method' | 'note'> & { dealer_id: string | null }
 export const addTip = async (t: TipInput) => {
   await run(supabase.from('dealer_tips').insert(t))
 }
@@ -305,7 +317,7 @@ export const updateTip = (id: string, patch: Partial<Omit<TipInput, 'game_id'>>)
   runChanged(supabase.from('dealer_tips').update(patch).eq('id', id).select('id'))
 export const deleteTip = (id: string) => runChanged(supabase.from('dealer_tips').delete().eq('id', id).select('id'))
 
-export type ExpenseInput = Pick<Expense, 'game_id' | 'category' | 'description' | 'amount' | 'partner_id'>
+export type ExpenseInput = Pick<Expense, 'game_id' | 'category' | 'description' | 'amount' | 'partner_id'> & { dealer_id: string | null }
 export const addExpense = async (e: ExpenseInput) => {
   await run(supabase.from('expenses').insert(e))
 }
@@ -313,24 +325,68 @@ export const updateExpense = (id: string, patch: Partial<Omit<ExpenseInput, 'gam
   runChanged(supabase.from('expenses').update(patch).eq('id', id).select('id'))
 export const deleteExpense = (id: string) => runChanged(supabase.from('expenses').delete().eq('id', id).select('id'))
 
-/** Distinct dealer names used before, most recent first (for quick picks). */
-export async function recentDealerNames(): Promise<string[]> {
-  const rows = await run(
-    supabase
-      .from('dealer_tips')
-      .select('dealer_name')
-      .eq('org_id', orgId())
-      .order('created_at', { ascending: false })
-      .limit(200)
-      .returns<{ dealer_name: string }[]>(),
+// ---------------------------------------------------------------- dealers
+
+const DEALER_NUMS: (keyof DealerAccount)[] = ['rounds', 'games', 'total_rake', 'total_tips', 'tip_tax', 'net_tips', 'dealer_pay', 'balance']
+
+export const listDealerAccounts = async () =>
+  (await fetchAll<DealerAccount>((a, b) => supabase.from('dealer_accounts').select('*').eq('org_id', orgId()).order('name').range(a, b))).map((r) =>
+    num(r, DEALER_NUMS),
   )
-  const seen = new Map<string, string>()
-  for (const r of rows) {
-    const k = r.dealer_name.trim().toLowerCase()
-    if (!seen.has(k)) seen.set(k, r.dealer_name.trim())
-  }
-  return [...seen.values()].slice(0, 8)
+
+export const getDealerAccount = async (id: string): Promise<DealerAccount | null> => {
+  const r = await run(supabase.from('dealer_accounts').select('*').eq('id', id).maybeSingle<DealerAccount>())
+  return r && num(r, DEALER_NUMS)
 }
+
+export const createDealer = (name: string) =>
+  run(supabase.from('dealers').insert({ org_id: orgId(), name: name.trim() }).select('*').single<Dealer>())
+
+export const updateDealer = (id: string, patch: Partial<Pick<Dealer, 'name' | 'phone' | 'notes' | 'active'>>) =>
+  runChanged(supabase.from('dealers').update(patch).eq('id', id).select('id'))
+
+export const deleteDealer = (id: string) => runChanged(supabase.from('dealers').delete().eq('id', id).select('id'))
+
+/** Every round a dealer reported, the dealer pay that went to them, and payments either way. */
+export async function getDealerLedger(dealerId: string): Promise<{
+  rounds: DealerRound[]
+  pay: (Expense & { game_name: string; game_date: string })[]
+  payments: DealerPayment[]
+}> {
+  const [rounds, pay, payments] = await Promise.all([
+    fetchAll<DealerTip & { games: { name: string; game_date: string; tip_tax_pct: number } | null }>((a, b) =>
+      supabase
+        .from('dealer_tips')
+        .select('*, games(name, game_date, tip_tax_pct)')
+        .eq('dealer_id', dealerId)
+        .order('created_at', { ascending: false })
+        .range(a, b),
+    ),
+    fetchAll<WithGame<Expense>>((a, b) =>
+      supabase.from('expenses').select('*, games(name, game_date)').eq('dealer_id', dealerId).order('created_at', { ascending: false }).range(a, b),
+    ),
+    fetchAll<DealerPayment>((a, b) =>
+      supabase.from('dealer_payments').select('*').eq('dealer_id', dealerId).order('created_at', { ascending: false }).range(a, b),
+    ),
+  ])
+  return {
+    rounds: rounds.map(({ games, ...r }) => ({
+      ...num(r as DealerTip, ['amount', 'rake']),
+      game_name: games?.name ?? '',
+      game_date: games?.game_date ?? '',
+      tip_tax_pct: Number(games?.tip_tax_pct ?? 0),
+    })),
+    pay: pay.map(flattenGame),
+    payments: payments.map((p) => num(p, ['amount'])),
+  }
+}
+
+export type DealerPaymentInput = Pick<DealerPayment, 'dealer_id' | 'direction' | 'amount' | 'method' | 'note'>
+export const addDealerPayment = async (p: DealerPaymentInput) => {
+  await run(supabase.from('dealer_payments').insert(p))
+}
+export const deleteDealerPayment = (id: string) =>
+  runChanged(supabase.from('dealer_payments').delete().eq('id', id).select('id'))
 
 // ---------------------------------------------------------------- house rules (on the organization)
 
@@ -429,12 +485,17 @@ export const deletePlayerPayment = (id: string) =>
 
 // ---------------------------------------------------------------- audit log
 
+/** The history. Only the app owner can read it (enforced by the database). */
 export async function listAudit(f: AuditFilter = {}): Promise<AuditEntry[]> {
-  let q = supabase.from('audit_log').select('*').eq('org_id', orgId())
+  let q = supabase.from('audit_log').select('*')
+  if (f.accountsOnly) q = q.is('org_id', null)
+  else if (f.inOrg) q = q.eq('org_id', f.inOrg)
+  else if (!f.everywhere) q = q.eq('org_id', orgId())
   if (f.gameId) q = q.eq('game_id', f.gameId)
   if (f.playerId) q = q.eq('player_id', f.playerId)
   if (f.partnerId) q = q.eq('partner_id', f.partnerId)
-  if (f.actorEmail) q = q.eq('actor_email', f.actorEmail)
+  if (f.dealerId) q = q.eq('dealer_id', f.dealerId)
+  if (f.actorId) q = q.eq('actor_id', f.actorId)
   if (f.table) q = q.eq('table_name', f.table)
   if (f.beforeId) q = q.lt('id', f.beforeId)
   return run(q.order('id', { ascending: false }).limit(f.limit ?? 100).returns<AuditEntry[]>())

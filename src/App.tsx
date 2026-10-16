@@ -6,6 +6,7 @@ import { SAMPLE_BASE, isSample } from './lib/mode'
 import { isConfigured } from './lib/supabase'
 import { GamePage } from './pages/Game'
 import { AdminPage, AdminStandalone } from './pages/Admin'
+import { DealerPage, DealersPage } from './pages/Dealers'
 import { BootLoading, ErrorPage, LoginPage, OnboardingPage, SetupPage } from './pages/Gate'
 import { GamesPage } from './pages/Games'
 import { HistoryPage } from './pages/History'
@@ -31,7 +32,10 @@ function Routed() {
         <Route path="players/:id" element={<PlayerPage />} />
         <Route path="partners" element={<PartnersPage />} />
         <Route path="partners/:id" element={<PartnerPage />} />
-        <Route path="history" element={<HistoryPage />} />
+        <Route path="dealers" element={<DealersPage />} />
+        <Route path="dealers/:id" element={<DealerPage />} />
+        {/* The history is for the app owner only (the database enforces it too). */}
+        <Route path="history" element={isOwner ? <HistoryPage /> : <Navigate to="/" replace />} />
         <Route path="org" element={<OrganizationPage />} />
         {isOwner && <Route path="admin" element={<AdminPage />} />}
         <Route path="club" element={<Navigate to="/org" replace />} />

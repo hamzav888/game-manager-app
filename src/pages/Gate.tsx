@@ -77,7 +77,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) && password.length > 0
+  const valid = email.trim().length > 0 && password.length > 0
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -99,8 +99,16 @@ export function LoginPage() {
         <form className="mt-4 space-y-3.5" onSubmit={submit}>
           {notice && <Notice tone="error">{notice}</Notice>}
           {error && <Notice tone="error">{error}</Notice>}
-          <Field label="Email">
-            <TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" autoCapitalize="none" required />
+          <Field label="Username">
+            <TextInput
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              required
+            />
           </Field>
           <Field label="Password">
             <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
@@ -129,14 +137,14 @@ export function LoginPage() {
 
 /** Signed in, but not in any organization (and not the owner). */
 export function OnboardingPage() {
-  const { user, approved, orgs, refresh, signOut } = useAuth()
+  const { user, username, approved, orgs, refresh, signOut } = useAuth()
   const paused = orgs.filter((o) => !o.active)
   return (
     <Shell compact>
       <Card className="space-y-3 p-5">
         <h1 className="font-display text-[30px] leading-[1.05]">{approved ? 'Almost there' : 'Waiting for approval'}</h1>
         <p className="text-sm text-muted">
-          Signed in as <span className="text-ink">{user?.email}</span>.{' '}
+          Signed in as <span className="text-ink">{username ?? user?.email}</span>.{' '}
           {approved
             ? 'Your account is ready, but you haven’t been added to an organization yet. Ask the app owner or your organization’s admin to add you.'
             : 'The app owner needs to approve this account before it can be added to an organization.'}

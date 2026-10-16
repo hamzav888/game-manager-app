@@ -1,6 +1,6 @@
 # Setup: Supabase, sign-in and deployment (Vercel or Netlify)
 
-This takes about 15 minutes. You (the app owner) create everyone's account and every organization from inside the app. No email setup is needed. Google sign-in is an optional extra (step 7).
+This takes about 15 minutes. You (the app owner) create everyone's account and every organization from inside the app. Everyone signs in with a **username** and a password of any length. No email setup is needed.
 
 You'll need:
 
@@ -23,8 +23,11 @@ You'll need:
 2. Paste all of [`supabase/migrations/20261013000000_schema.sql`](supabase/migrations/20261013000000_schema.sql) and click **Run**. You should see **Success. No rows returned**.
 3. Click **New query** again. Paste all of [`supabase/migrations/20261014000000_owner_accounts.sql`](supabase/migrations/20261014000000_owner_accounts.sql) and click **Run**.
 4. Click **New query** once more. Paste all of [`supabase/migrations/20261015000000_rake_and_discounts.sql`](supabase/migrations/20261015000000_rake_and_discounts.sql) and click **Run**.
+5. And one last time: [`supabase/migrations/20261016000000_usernames_dealers_history.sql`](supabase/migrations/20261016000000_usernames_dealers_history.sql), then **Run**.
 
-These three files create every table, the security rules, the audit log, the owner tools, dealer-round rake and per-player loss discounts. Run them in this order, each one once.
+These four files create every table, the security rules, the owner tools, dealer-round rake, per-player loss discounts, usernames, dealer accounts and the owner-only history. Run them in this order, each one once.
+
+> **Upgrading from email sign-in?** The fourth file switches everyone to usernames. **The owner's username is `avayani`** and the password stays the same. Everyone else gets a username made from their old email (for `jordan@gmail.com` it's `jordan`). You can see and change them all in **Admin → Accounts**.
 
 > Already ran some of them? Just run the ones you haven't, in order. Each one upgrades what's there, and nothing is lost. If you run one twice it stops with "already installed" and changes nothing.
 
@@ -32,16 +35,11 @@ These three files create every table, the security rules, the audit log, the own
 
 Go to **Authentication → Sign In / Providers**:
 
-1. **Email provider:** leave it **enabled**.
-2. **Confirm email:** turn it **off**. Accounts you create are ready to use immediately, and no emails are ever sent.
-3. **Allow new users to sign up:** leave it **on**. The app needs this to create accounts for you, because there's no server.
-   - The app never shows a sign-up form.
-   - Any account you didn't create or approve can't see or do anything.
+1. **Email provider:** leave it **enabled**. (Usernames sign in through it behind the scenes.)
+2. **Allow new users to sign up:** turn it **off**. Accounts are created only by you, from **Admin**, inside the database, so nobody else can make one.
+3. **Confirm email:** doesn't matter. Accounts you create are ready to use immediately, and no emails are ever sent.
 
-Only if you'll use Google sign-in (step 7), also go to **Authentication → URL Configuration**:
-
-- Set **Site URL** to your live site.
-- Add `http://localhost:5180/**` and `https://YOUR-SITE/**` to **Redirect URLs**.
+Supabase's own minimum password length doesn't apply: passwords are set by the app, and any length works.
 
 ## 4. Create your owner account
 
@@ -51,7 +49,9 @@ Only if you'll use Google sign-in (step 7), also go to **Authentication → URL 
 2. Enter your email and a password, and tick **Auto Confirm User**.
 3. Click **Create user**.
 
-> Already have accounts in the project? Your **earliest** account was made the owner when you ran the second file. Sign in with it and you'll see **Admin**.
+Sign in to the app with that email and password the first time (the Username box takes an email too). Your username is the part of the email before the @; change it in **Admin → Accounts → you**.
+
+> Already have accounts in the project? Your **earliest** account is the owner, and after the fourth file its username is **`avayani`**. Sign in with `avayani` and your existing password, and you'll see **Admin**.
 
 ## 5. Copy your API keys
 
@@ -121,17 +121,17 @@ git push -u origin main
 2. Open **Environment Variables** and add:
    - `VITE_SUPABASE_URL`: your Project URL
    - `VITE_SUPABASE_ANON_KEY`: your anon / publishable key
-   - `VITE_AUTH_GOOGLE`: `true` (only if you finish step 8)
+   - `VITE_AUTH_GOOGLE`: leave it out (Google sign-in isn't used with usernames)
 3. Click **Deploy**.
 4. Copy the production address (for example `https://poker-ledger.vercel.app`).
-5. Open the address and sign in with your owner account. If you use Google sign-in, also put this address in Supabase's **Site URL** and **Redirect URLs** (step 3).
+5. Open the address and sign in with your owner account.
 
 ### Option B: Netlify
 
 1. Go to [app.netlify.com](https://app.netlify.com) and click **Add new project** (older accounts: **Add new site**) **→ Import an existing project → GitHub**, then pick the repository. The build settings are read from `netlify.toml`.
 2. Before deploying, open **Add environment variables** and add the same variables as for Vercel.
 3. Click **Deploy**.
-4. Open the site address (for example `https://poker-ledger.netlify.app`) and sign in. If you use Google sign-in, add the address to Supabase's **Site URL** and **Redirect URLs** (step 3).
+4. Open the site address (for example `https://poker-ledger.netlify.app`) and sign in.
 
 ### On either host
 
@@ -144,21 +144,9 @@ git push -u origin main
   - security headers: a Content-Security-Policy, no framing, HTTPS-only
 - The CSP allows connections only to `*.supabase.co`. If you later put Supabase behind a custom domain, add it to `connect-src` in both files.
 
-## 8. Google sign-in (optional)
+## 8. Google sign-in (not used)
 
-1. In [Google Cloud Console](https://console.cloud.google.com), create or select a project.
-2. Go to **Google Auth Platform → Branding** (older consoles call it *OAuth consent screen*):
-   - App name: "Poker Ledger". Add your support email.
-   - Under **Authorized domains**, add your site's domain (for example `vercel.app` or your own domain) and `supabase.co`.
-3. Under **Audience**, choose **External**. When you're ready for everyone, click **Publish app**. While it's in "Testing", only the test users you list can sign in.
-4. Go to **Clients → Create client → Web application**:
-   - **Authorized JavaScript origins:** `http://localhost:5180` and your live site address
-   - **Authorized redirect URIs:** `https://YOUR-PROJECT-REF.supabase.co/auth/v1/callback` (Supabase shows this exact URL on its Google provider page)
-   - Click **Create**, then copy the **Client ID** and **Client secret**.
-5. In Supabase, go to **Authentication → Sign In / Providers → Google**. Turn it on, paste the ID and secret, and click **Save**.
-6. Set `VITE_AUTH_GOOGLE=true` in `.env.local` and in your host's environment variables, then redeploy.
-
-Anyone who signs in with Google for the first time shows up in **Admin → Accounts → Waiting for approval**. They can't see anything until you approve them and add them to an organization. If you already made an account with the same email, Supabase links the Google login to it.
+Everyone signs in with a username, and sign-ups are off, so Google sign-in isn't needed. Leave `VITE_AUTH_GOOGLE` unset.
 
 ## 9. Put it on your phone's home screen
 
@@ -185,57 +173,60 @@ Updates arrive by themselves: every time you deploy, the app picks up the new ve
 Signed in as the owner, tap your chip avatar (top right) and choose **Admin**. You'll also land there automatically if you're not in any organization yet.
 
 1. **Create accounts.** Go to **Admin → Accounts → Create an account**:
-   - Enter their name, their email (this is their login) and a password. **Generate** makes a strong one.
+   - Enter their name, a **username** (their login) and a password of any length. **Generate** makes one for you.
    - Optionally put them straight into an organization.
-   - You'll get a ready-to-send message with their login. **Copy** or **Share** it to them.
+   - You'll get a ready-to-send message with their username and password. **Copy** or **Share** it to them.
+   - Only you can do this. Org admins and organizers can't create accounts, set passwords or see other people's logins.
 2. **Create organizations.** Go to **Admin → Organizations → New organization**:
    - Give it a name, and pick **who runs it** (yourself, or an account you made). That person becomes its admin.
 3. **Put people in organizations.** Go to **Admin → Organizations → tap one**. From there you can:
    - add any account as Organizer or Admin
    - tap a role to switch it
    - pause or remove someone
-4. **Forgotten password?** Go to **Admin → Accounts → tap the person → Set a new password**, then send them the new one.
+4. **Forgotten password?** Go to **Admin → Accounts → tap the person → Set a new password**, then send them the new one. You can change their **username** there too.
 5. **Blocking someone:** **Admin → Accounts → tap them → Block this account** cuts their access everywhere at once. Their history stays.
+6. **See everything that happened:** **Admin → History** (or **History** in the bottom bar for the organization you're in). Every action by every account, to the second: buy-ins, rounds, edits, deletes, members, accounts created or changed, password changes (never the passwords) and every sign-in. **Only you can see it, and nobody can edit or delete it**, not even you.
 
-People change their own password and display name from the account menu (tap their avatar → **Change password** / **Your name**).
+People change their own password (any length, after typing their current one) and display name from the account menu (tap their avatar → **Change password** / **Your name**).
 
 ### Try it with a demo organization (optional)
 
 Want to see the app full of realistic data before your first real night? In Supabase → **SQL Editor → New query**, paste all of [`supabase/demo/demo_create.sql`](supabase/demo/demo_create.sql) and click **Run**.
 
-- It adds one organization, **Demo · Riverside Card Club**, with you as its admin: 14 made-up players, 3 partners, 8 ended games (with dealer rounds, discounts, expenses and payouts) and 2 tables running right now.
+- It adds one organization, **Demo · Riverside Card Club**, with you as its admin: 14 made-up players, 3 dealers, 3 partners, 8 ended games (with dealer rounds, discounts, expenses and payouts) and 2 tables running right now.
 - Your real organizations, players, games and accounts aren't touched, and no logins are created.
 - Switch to it from your avatar menu (**Switch to Demo · Riverside Card Club**).
-- When you're done, run [`supabase/demo/demo_remove.sql`](supabase/demo/demo_remove.sql) the same way. It deletes the demo organization and everything in it, and nothing else.
+- When you're done, run [`supabase/demo/demo_remove.sql`](supabase/demo/demo_remove.sql) the same way. It deletes the demo organization and everything in it, and nothing else. Its history stays (history is never deleted).
 
 ---
 
 ## How accounts and organizations work
 
 - **Owner (you):** creates accounts and organizations and decides who's in each one, all from **Admin** in the app.
-- **Account:** one person's login. Only accounts you create (or approve) can be put in an organization. Any other account sees nothing.
+- **Account:** one person's login: a username and a password. Only you create them. They can never create accounts themselves.
 - **Organization:** one poker operation. It has its own:
-  - games, players and partners
-  - ledgers and history
+  - games, players, dealers and partners, each with a ledger account
   - house rules (tip tax %, loss discount %)
 
   Organizations are completely separate: the database refuses to show or change another organization's data.
 - **One person, several organizations:** someone can be in more than one organization and switch from the account menu.
-- **Members vs partners:**
+- **Members, players, dealers and partners:**
   - *Members* log in and run the app.
-  - *Partners* are the owners who split the profit (Partners tab).
-  - Someone can be both.
+  - *Players*, *dealers* and *partners* don't log in. Each has an account with a ledger (People and Partners tabs).
+  - Someone can be both a member and a partner.
+- **The history** is the owner's record of everything. Members never see it.
 
 ### Roles
 
 | | Owner | Org admin | Organizer |
 |---|---|---|---|
-| Create accounts, set passwords, approve or block | ✓ | | |
+| Create accounts, change usernames, set passwords, approve or block | ✓ | | |
+| See the history (every action, who did it, when) | ✓ | | |
 | Create organizations; manage anyone's membership | ✓ | | |
 | Add members (existing accounts) to *their* organization; change roles; pause or remove | ✓ | ✓ | |
 | Partners, profit shares, payouts, house rules | (if admin there) | ✓ | |
 | Reopen or delete ended games; delete players | (if admin there) | ✓ | |
-| Run games, players, payments; see ledgers and history | (if member) | ✓ | ✓ |
+| Run games, players, dealers, payments; see ledgers | (if member) | ✓ | ✓ |
 
 The owner doesn't automatically see an organization's games: add yourself to it if you want to. Every organization always keeps at least one admin.
 
@@ -243,16 +234,15 @@ The owner doesn't automatically see an organization's games: add yourself to it 
 
 | Problem | Fix |
 |---|---|
-| "This upgrade is already installed" | That file already ran. Nothing changed; move on to the next one. |
+| "… upgrade (file name) is already installed" | That file already ran. Nothing changed; the message names the next file to run, if any. |
 | The Add to Home Screen icon is a screenshot, or the app opens with Safari's address bar | Open the live **https** address (not a preview link), wait for it to load fully, then add it again. Delete the old home-screen icon first. |
 | `relation "profiles" already exists` when running the first file | Open **Table Editor**. If you see `organizations`, `games` and `memberships`, the schema already ran and you're done (it was run twice). If you only see a `profiles` table, the project came with one from a starter template. Use a fresh project, or (only if you don't need that table) run `drop trigger if exists on_auth_user_created on auth.users; drop table if exists public.profiles cascade;` and then run the schema again. |
-| "Supabase is blocking new accounts" when creating an account | Turn **Allow new users to sign up** back on (step 3). The app needs it, and strangers still can't do anything. |
-| "…needs email confirmation" when creating an account | Turn **Confirm email** off (step 3). Then open the account in Admin and set a new password for it. |
+| "Wrong username or password" right after the fourth file | The owner's username is now `avayani` (same password). Others: look up their username in **Admin → Accounts**, or set a new password there. |
+| "permission denied for table users" when creating an account | Run the fourth file again in the SQL Editor (it creates the account tools with the right permissions), or check that you ran it as the default `postgres` user. |
 | I don't see **Admin** | Only the owner (the first account in the project) has it. Check that you're signed in with that account. |
 | Someone sees "Waiting for approval" | Approve them in **Admin → Accounts**, then add them to an organization. |
 | Someone sees "Almost there" | Their account is fine. Add them to an organization (Admin, or their org admin via **Org → Add**). |
 | "Supabase isn't configured" on the live site | The `VITE_SUPABASE_*` variables are missing on the host. Add them and **redeploy**. |
-| Google: `redirect_uri_mismatch` | The redirect URI in Google must be exactly `https://YOUR-PROJECT-REF.supabase.co/auth/v1/callback`. |
 | "Not allowed…" when saving | Your role can’t do that (see the table above), or the game has ended. |
 
 ## For developers

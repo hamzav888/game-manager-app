@@ -35,7 +35,7 @@ import {
 } from '../components/ui'
 import { discountRateFor, splitProfit, summarizeGame } from '../lib/accounting'
 import type { GameSummary, PlayerLine } from '../lib/accounting'
-import { getGameData, listGameTotals, listPartnerAccounts, listPlayers, recentDealerNames, updateGame } from '../lib/api'
+import { getGameData, listDealerAccounts, listGameTotals, listPartnerAccounts, listPlayers, updateGame } from '../lib/api'
 import type { RecordStamp } from '../lib/actors'
 import { useRecordStamps } from '../lib/actors'
 import { formatClock, formatDate, money, signedMoney, timeAgo } from '../lib/format'
@@ -56,12 +56,13 @@ type Modal =
   | { kind: 'edit-game' }
 
 const DEFAULT_QUICK = [200, 500, 1000, 2000]
-const TABS: { value: Tab; label: string }[] = [
+const TABS: { value: Tab; label: string; ownerOnly?: boolean }[] = [
   { value: 'players', label: 'Players' },
   { value: 'rounds', label: 'Rake & tips' },
   { value: 'expenses', label: 'Expenses' },
   { value: 'summary', label: 'Summary' },
-  { value: 'activity', label: 'Activity' },
+  // the history is for the app owner only
+  { value: 'activity', label: 'Activity', ownerOnly: true },
 ]
 
 function quickAmountsFor(txs: Transaction[]): number[] {
@@ -126,19 +127,22 @@ function useEndGame(game: Game, s: GameSummary, onChanged: () => void) {
 
 export function GamePage() {
   const { id = '' } = useParams()
-  const { isAdmin } = useAuth()
+  const { isAdmin, isOwner } = useAuth()
   const [params, setParams] = useSearchParams()
+  const tabs = TABS.filter((t) => !t.ownerOnly || isOwner)
   const rawTab = params.get('tab')
-  const tab: Tab = rawTab === 'tips' ? 'rounds' : TABS.some((t) => t.value === rawTab) ? (rawTab as Tab) : 'players'
+  const tab: Tab = rawTab === 'tips' ? 'rounds' : tabs.some((t) => t.value === rawTab) ? (rawTab as Tab) : 'players'
   const setTab = (t: Tab) => setParams(t === 'players' ? {} : { tab: t }, { replace: true })
 
   const game = useLoader(() => getGameData(id), [id])
   const roster = useLoader(listPlayers, [])
-  const dealers = useLoader(recentDealerNames, [])
+  const dealers = useLoader(listDealerAccounts, [])
   const partners = useLoader(listPartnerAccounts, [])
   const tables = useLoader(listGameTotals, [])
-  const stamps = useRecordStamps({ gameId: id })
+  const stampRows = useMemo(() => (game.data ? [...game.data.txs, ...game.data.tips, ...game.data.expenses] : []), [game.data])
+  const stamps = useRecordStamps({ gameId: id }, stampRows)
   useRealtime(['games', 'transactions', 'dealer_tips', 'expenses'], game.reload)
+  useRealtime(['dealers'], dealers.reload)
   useRealtime(['games', 'transactions'], tables.reload)
   useRealtime(['players'], roster.reload)
   useRealtime(['partners'], partners.reload)
@@ -184,9 +188,9 @@ export function GamePage() {
     void tables.reload()
   }
   const quick = quickAmountsFor(game.data.txs)
-  const dealerNames = [
-    ...new Set([...[...game.data.tips].reverse().map((t) => t.dealer_name), ...(dealers.data ?? [])].map((n) => n.trim())),
-  ].slice(0, 8)
+  const dealerAccounts = dealers.data ?? []
+  const recentDealers = [...dealerAccounts].filter((d) => d.active).sort((a, b) => (b.last_dealt ?? '').localeCompare(a.last_dealt ?? '')).map((d) => d.name)
+  const dealerNames = [...new Set([...[...game.data.tips].reverse().map((t) => t.dealer_name), ...recentDealers].map((n) => n.trim()))].slice(0, 8)
   const activePartners = (partners.data ?? []).filter((p) => p.active)
   // Dealers rotate: suggest whoever has gone longest without reporting a round.
   const lastSeen = new Map<string, string>()
@@ -199,7 +203,7 @@ export function GamePage() {
   const nextDealer =
     rotation.length >= 2
       ? rotation[0]
-      : ((dealers.data ?? []).find((n) => n.toLowerCase() !== rotation[0]?.toLowerCase()) ?? rotation[0] ?? '')
+      : (recentDealers.find((n) => n.toLowerCase() !== rotation[0]?.toLowerCase()) ?? rotation[0] ?? '')
   const otherTables = (tables.data ?? []).filter((t) => t.status === 'open' && t.id !== g.id)
   const roundNo = (t?: DealerTip) => (t ? game.data!.tips.findIndex((x) => x.id === t.id) + 1 : game.data!.tips.length + 1)
 
@@ -216,7 +220,7 @@ export function GamePage() {
       />
 
       <div className="mt-5">
-        <Tabs value={tab} options={TABS} onChange={setTab} />
+        <Tabs value={tab} options={tabs} onChange={setTab} />
       </div>
 
       {tab === 'players' && <PlayersTab summary={summary} canEdit={canEdit} onModal={setModal} />}
@@ -225,7 +229,7 @@ export function GamePage() {
         <ExpensesTab expenses={game.data.expenses} summary={summary} canEdit={canEdit} onModal={setModal} stamps={stamps} />
       )}
       {tab === 'summary' && <SummaryTab game={g} summary={summary} partners={activePartners} onChanged={reload} />}
-      {tab === 'activity' && (
+      {tab === 'activity' && isOwner && (
         <div className="mt-5">
           <ActivityList filter={{ gameId: g.id }} playersById={playersById} live />
         </div>
@@ -291,6 +295,7 @@ export function GamePage() {
           game={g}
           existing={modal.existing}
           roundNo={roundNo(modal.existing)}
+          dealers={dealerAccounts}
           dealerNames={dealerNames}
           suggestedDealer={nextDealer}
           onClose={close}
@@ -298,7 +303,7 @@ export function GamePage() {
         />
       )}
       {modal?.kind === 'expense' && (
-        <ExpenseSheet game={g} existing={modal.existing} partners={activePartners} onClose={close} onSaved={reload} />
+        <ExpenseSheet game={g} existing={modal.existing} partners={activePartners} dealers={dealerAccounts} onClose={close} onSaved={reload} />
       )}
       {modal?.kind === 'edit-game' && <EditGameSheet game={g} onClose={close} onSaved={reload} />}
     </>
@@ -691,7 +696,11 @@ function RoundsTab({
           <SectionTitle>By dealer</SectionTitle>
           <Card className="divide-y divide-line">
             {s.dealers.map((d) => (
-              <div key={d.name} className="flex items-center gap-3 px-3.5 py-3">
+              <Link
+                key={d.name}
+                to={`/dealers/${rounds.find((t) => t.dealer_name.trim().toLowerCase() === d.name.toLowerCase())?.dealer_id ?? ''}`}
+                className="flex items-center gap-3 px-3.5 py-3 hover:bg-surface-2/60"
+              >
                 <Avatar name={d.name} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium">{d.name}</span>
@@ -711,7 +720,7 @@ function RoundsTab({
                     )}
                   </span>
                 </span>
-              </div>
+              </Link>
             ))}
           </Card>
 
@@ -730,7 +739,10 @@ function RoundsTab({
                 >
                   <span className="font-display w-7 shrink-0 text-center text-[22px] leading-none text-faint">{n}</span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate">{t.dealer_name}</span>
+                    <span className="block truncate">
+                      {t.dealer_name}
+                      {t.method === 'account' && t.amount > 0 && <span className="text-xs text-brass"> · tips owed</span>}
+                    </span>
                     <span className="block truncate text-xs text-faint tnum">
                       {formatClock(t.created_at)}
                       {stamps.get(t.id)?.createdBy && ` · ${stamps.get(t.id)!.createdBy}`}

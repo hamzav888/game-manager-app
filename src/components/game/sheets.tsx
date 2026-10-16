@@ -19,8 +19,8 @@ import {
 } from '../../lib/api'
 import type { RecordStamp } from '../../lib/actors'
 import { formatClock, formatStamp, money, parseAmount } from '../../lib/format'
-import { EXPENSE_CATEGORIES, PAY_METHODS, methodLabel } from '../../lib/types'
-import type { DealerTip, Expense, ExpenseCategory, Game, PartnerAccount, PayMethod, Player, Transaction } from '../../lib/types'
+import { EXPENSE_CATEGORIES, PAY_METHODS, TIP_METHODS, methodLabel } from '../../lib/types'
+import type { Dealer, DealerTip, Expense, ExpenseCategory, Game, PartnerAccount, PayMethod, Player, TipMethod, Transaction } from '../../lib/types'
 import { Icon } from '../Icon'
 import {
   AmountInput,
@@ -565,6 +565,7 @@ export function RoundSheet({
   game,
   existing,
   roundNo,
+  dealers,
   dealerNames,
   suggestedDealer,
   onClose,
@@ -574,6 +575,8 @@ export function RoundSheet({
   existing?: DealerTip
   /** the round's number in this game (for the title) */
   roundNo: number
+  /** dealer accounts in this organization */
+  dealers: Dealer[]
   dealerNames: string[]
   /** likely next dealer in the rotation */
   suggestedDealer?: string
@@ -585,6 +588,8 @@ export function RoundSheet({
   const [rake, setRake] = useState(existing && existing.rake ? amountStr(existing.rake) : '')
   const [tips, setTips] = useState(existing && existing.amount ? amountStr(existing.amount) : '')
   const [note, setNote] = useState(existing?.note ?? '')
+  const [method, setMethod] = useState<TipMethod>(existing?.method ?? 'cash')
+  const match = dealers.find((d) => d.name.trim().toLowerCase() === dealer.trim().toLowerCase())
   const rakeN = rake.trim() === '' ? 0 : parseAmount(rake)
   const tipsN = tips.trim() === '' ? 0 : parseAmount(tips)
   const valid = rakeN >= 0 && tipsN >= 0 && rakeN + tipsN > 0 && dealer.trim().length > 0
@@ -592,7 +597,7 @@ export function RoundSheet({
   const name = dealer.trim() || 'The dealer'
 
   const submit = () => {
-    const payload = { dealer_name: dealer.trim(), rake: rakeN, amount: tipsN, note: note.trim() || null }
+    const payload = { dealer_id: match?.id ?? null, dealer_name: match?.name ?? dealer.trim(), rake: rakeN, amount: tipsN, method, note: note.trim() || null }
     return save(
       () => (existing ? updateTip(existing.id, payload) : addTip({ ...payload, game_id: game.id })),
       existing ? `Round ${roundNo} updated` : `Round ${roundNo}: ${money(rakeN)} rake, ${money(tipsN)} tips`,
@@ -618,7 +623,7 @@ export function RoundSheet({
                 </div>
               </div>
               <div className="px-3.5 py-2.5">
-                <div className="truncate text-xs text-muted">{name} takes home</div>
+                <div className="truncate text-xs text-muted">{method === 'account' && tipsN > 0 ? `Owed to ${name}` : `${name} takes home`}</div>
                 <Money value={tipsN - tax} className="font-display text-[24px] leading-tight" />
                 <div className="text-[11px] text-faint">{game.tip_tax_pct > 0 ? `tips − ${game.tip_tax_pct}% tip tax` : 'all their tips'}</div>
               </div>
@@ -637,7 +642,10 @@ export function RoundSheet({
           if (valid) void submit()
         }}
       >
-        <Field label="Dealer">
+        <Field
+          label="Dealer"
+          hint={dealer.trim() && !match ? `New dealer — an account is opened for ${dealer.trim()} when you save.` : undefined}
+        >
           <TextInput value={dealer} onChange={(e) => setDealer(e.target.value)} maxLength={60} placeholder="Dealer name" />
         </Field>
         {dealerNames.length > 0 && (
@@ -658,6 +666,14 @@ export function RoundSheet({
         >
           <AmountInput value={tips} onChange={setTips} />
         </Field>
+        {tipsN > 0 && (
+          <Field
+            label="Their tips"
+            hint={method === 'account' ? `Goes on ${dealer.trim() || 'the dealer'}’s account until you pay them.` : 'Paid out now, so nothing is owed.'}
+          >
+            <Segmented value={method} options={TIP_METHODS} onChange={setMethod} />
+          </Field>
+        )}
         <Field label="Note (optional)">
           <TextInput value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} />
         </Field>
@@ -673,12 +689,15 @@ export function ExpenseSheet({
   game,
   existing,
   partners,
+  dealers,
   onClose,
   onSaved,
 }: {
   game: Game
   existing?: Expense
   partners: PartnerAccount[]
+  /** dealer accounts, for dealer pay */
+  dealers: Dealer[]
   onClose: () => void
   onSaved: () => void
 }) {
@@ -688,11 +707,19 @@ export function ExpenseSheet({
   const [amount, setAmount] = useState(existing ? amountStr(existing.amount) : '')
   // '' = game bank
   const [payer, setPayer] = useState<string>(existing ? (existing.partner_id ?? '') : (partners[0]?.id ?? ''))
+  // '' = not tied to a dealer
+  const [dealerId, setDealerId] = useState<string>(existing?.dealer_id ?? '')
   const value = parseAmount(amount)
   const valid = value > 0
 
   const submit = () => {
-    const payload = { category, description: description.trim() || null, amount: value, partner_id: payer || null }
+    const payload = {
+      category,
+      description: description.trim() || null,
+      amount: value,
+      partner_id: payer || null,
+      dealer_id: category === 'dealer_pay' ? dealerId || null : null,
+    }
     return save(
       () => (existing ? updateExpense(existing.id, payload) : addExpense({ ...payload, game_id: game.id })),
       existing ? 'Expense updated' : 'Expense recorded',
@@ -769,6 +796,19 @@ export function ExpenseSheet({
             ))}
           </div>
         </Field>
+        {category === 'dealer_pay' && dealers.length > 0 && (
+          <Field label="Which dealer? (optional)" hint="Shows on that dealer’s account and ledger.">
+            <div className="flex flex-wrap gap-2">
+              {dealers
+                .filter((d) => d.active || d.id === dealerId)
+                .map((d) => (
+                  <Chip key={d.id} active={dealerId === d.id} onClick={() => setDealerId(dealerId === d.id ? '' : d.id)}>
+                    {d.name}
+                  </Chip>
+                ))}
+            </div>
+          </Field>
+        )}
         <Field label="Description (optional)">
           <TextInput value={description} onChange={(e) => setDescription(e.target.value)} maxLength={200} placeholder="e.g. Pizza x4" />
         </Field>

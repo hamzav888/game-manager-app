@@ -1,19 +1,19 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../auth'
-import { updateMyProfile } from '../lib/api'
-import { updatePassword } from '../lib/authActions'
+import { changeMyPassword, updateMyProfile } from '../lib/api'
 import { resetSample } from '../lib/api/sample'
 import { isSample } from '../lib/mode'
 import { Icon } from './Icon'
 import type { IconName } from './Icon'
 import { Avatar, Badge, Button, Field, Sheet, TextInput, cx, useAction, useFeedback } from './ui'
 
-const NAV: { to: string; label: string; icon: IconName }[] = [
+const NAV: { to: string; label: string; icon: IconName; ownerOnly?: boolean; also?: string[] }[] = [
   { to: '/', label: 'Games', icon: 'games' },
-  { to: '/players', label: 'Players', icon: 'users' },
+  { to: '/players', label: 'People', icon: 'users', also: ['/dealers'] },
   { to: '/partners', label: 'Partners', icon: 'briefcase' },
-  { to: '/history', label: 'History', icon: 'history' },
+  // The history is for the app owner's eyes only (the database enforces it).
+  { to: '/history', label: 'History', icon: 'history', ownerOnly: true },
   { to: '/org', label: 'Org', icon: 'sliders' },
 ]
 
@@ -57,14 +57,14 @@ function SampleBanner() {
 }
 
 function AccountSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { me, user, org, orgs, isOwner, switchOrg, signOut, refresh } = useAuth()
+  const { me, user, username, org, orgs, isOwner, switchOrg, signOut, refresh } = useAuth()
   const reset = useResetSample()
   const navigate = useNavigate()
   const { busy, run } = useAction()
   const [changingPassword, setChangingPassword] = useState(false)
   const [name, setName] = useState(me?.display_name ?? '')
   useEffect(() => setName(me?.display_name ?? ''), [me?.display_name, open])
-  const display = me?.display_name || me?.email || user?.email || ''
+  const display = me?.display_name || username || user?.email || ''
   const others = orgs.filter((o) => o.active && o.id !== org?.id)
 
   return (
@@ -73,14 +73,14 @@ function AccountSheet({ open, onClose }: { open: boolean; onClose: () => void })
         <Avatar name={display} size={44} />
         <div className="min-w-0">
           <div className="truncate font-medium">{me?.display_name || 'You'}</div>
-          <div className="truncate text-sm text-muted">{user?.email}</div>
+          <div className="truncate text-sm text-muted">{username ? `@${username}` : user?.email}</div>
         </div>
         <div className="ml-auto">
           <Badge tone={me?.role === 'admin' ? 'brass' : 'neutral'}>{me?.role === 'admin' ? 'Admin' : 'Organizer'}</Badge>
         </div>
       </div>
 
-      <Field label="Your name" hint="Shown to your team in the history and ledgers.">
+      <Field label="Your name" hint="Shown to your team on the entries you record.">
         <div className="flex gap-2">
           <TextInput value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
           {name.trim() !== (me?.display_name ?? '') && user && (
@@ -179,9 +179,10 @@ function AccountSheet({ open, onClose }: { open: boolean; onClose: () => void })
 
 function ChangePasswordSheet({ onClose }: { onClose: () => void }) {
   const { busy, run } = useAction()
+  const [current, setCurrent] = useState('')
   const [password, setPassword] = useState('')
   const [repeat, setRepeat] = useState('')
-  const valid = password.length >= 8 && password === repeat
+  const valid = current.length > 0 && password.length > 0 && password === repeat
   return (
     <Sheet
       open
@@ -194,15 +195,18 @@ function ChangePasswordSheet({ onClose }: { onClose: () => void }) {
           className="w-full"
           disabled={!valid}
           loading={busy}
-          onClick={() => run(() => updatePassword(password), 'Password changed').then((ok) => ok && onClose())}
+          onClick={() => run(() => changeMyPassword(current, password), 'Password changed').then((ok) => ok && onClose())}
         >
           Save new password
         </Button>
       }
     >
       <div className="space-y-4">
-        <Field label="New password" hint="At least 8 characters.">
-          <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" autoFocus />
+        <Field label="Current password">
+          <TextInput type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" autoFocus />
+        </Field>
+        <Field label="New password" hint="Any length you like.">
+          <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
         </Field>
         <Field label="Repeat it" hint={repeat && password !== repeat ? 'The two passwords don’t match yet.' : undefined}>
           <TextInput type="password" value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" />
@@ -213,9 +217,12 @@ function ChangePasswordSheet({ onClose }: { onClose: () => void }) {
 }
 
 export function Layout() {
-  const { me, user, org } = useAuth()
+  const { me, user, username, org, isOwner } = useAuth()
+  const { pathname } = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
-  const name = me?.display_name || me?.email || user?.email || ''
+  const name = me?.display_name || username || user?.email || ''
+  const nav = NAV.filter((n) => !n.ownerOnly || isOwner)
+  const isActive = (n: (typeof NAV)[number], active: boolean) => active || !!n.also?.some((p) => pathname.startsWith(p))
 
   return (
     <div className="min-h-dvh">
@@ -230,13 +237,13 @@ export function Layout() {
             </span>
           </NavLink>
           <nav className="ml-5 hidden gap-0.5 md:flex">
-            {NAV.map((n) => (
+            {nav.map((n) => (
               <NavLink
                 key={n.to}
                 to={n.to}
                 end={n.to === '/'}
-                className={({ isActive }) =>
-                  cx('rounded-lg px-3 py-1.5 text-sm transition-colors', isActive ? 'bg-surface-2 text-ink' : 'text-muted hover:text-ink')
+                className={({ isActive: a }) =>
+                  cx('rounded-lg px-3 py-1.5 text-sm transition-colors', isActive(n, a) ? 'bg-surface-2 text-ink' : 'text-muted hover:text-ink')
                 }
               >
                 {n.label}
@@ -254,21 +261,21 @@ export function Layout() {
       </main>
 
       <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-line bg-[#0f0f0d]/95 backdrop-blur-xl md:hidden">
-        <div className="mx-auto grid max-w-3xl grid-cols-5">
-          {NAV.map((n) => (
+        <div className={cx('mx-auto grid max-w-3xl', nav.length === 5 ? 'grid-cols-5' : 'grid-cols-4')}>
+          {nav.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}
               end={n.to === '/'}
-              className={({ isActive }) =>
-                cx('relative flex flex-col items-center gap-1 pb-2 pt-2.5 text-[11px] transition-colors', isActive ? 'text-ink' : 'text-faint')
+              className={({ isActive: a }) =>
+                cx('relative flex flex-col items-center gap-1 pb-2 pt-2.5 text-[11px] transition-colors', isActive(n, a) ? 'text-ink' : 'text-faint')
               }
             >
-              {({ isActive }) => (
+              {({ isActive: a }) => (
                 <>
-                  {isActive && <span className="absolute inset-x-5 top-0 h-[2px] rounded-b-full bg-brass" />}
-                  <Icon name={n.icon} className={cx('size-[21px]', isActive && 'text-brass')} />
-                  <span className={isActive ? 'font-medium' : ''}>{n.label}</span>
+                  {isActive(n, a) && <span className="absolute inset-x-5 top-0 h-[2px] rounded-b-full bg-brass" />}
+                  <Icon name={n.icon} className={cx('size-[21px]', isActive(n, a) && 'text-brass')} />
+                  <span className={isActive(n, a) ? 'font-medium' : ''}>{n.label}</span>
                 </>
               )}
             </NavLink>

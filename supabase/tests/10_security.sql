@@ -62,7 +62,7 @@ select public.admin_set_password('c0000000-0000-0000-0000-000000000000', 'correc
 reset role;
 select t_rows('owner set carol''s password', $q$select 1 from auth.users where email = 'carol@example.com' and encrypted_password = extensions.crypt('correct-horse-9', encrypted_password)$q$, 1);
 set role authenticated;
-select t_fail('passwords need 8+ characters', $q$select public.admin_set_password('c0000000-0000-0000-0000-000000000000', 'short')$q$);
+select t_fail('passwords can''t be empty', $q$select public.admin_set_password('c0000000-0000-0000-0000-000000000000', '')$q$);
 
 -- ===================== Alice runs Org A, Bob runs Org B
 select t_as('a0000000-0000-0000-0000-000000000000');

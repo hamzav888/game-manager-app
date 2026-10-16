@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { ledgerCsv, partnerLedger, playerLedger, withBalances } from './ledger'
-import type { AccountTx, PartnerEntry, PartnerShareWithGame, PlayerPayment } from './types'
+import { dealerLedger, ledgerCsv, partnerLedger, playerLedger, withBalances } from './ledger'
+import type { AccountTx, DealerPayment, DealerRound, PartnerEntry, PartnerShareWithGame, PlayerPayment } from './types'
 
 let n = 0
 const at = () => new Date(Date.UTC(2026, 9, 10, 20, n++)).toISOString()
@@ -60,5 +60,32 @@ describe('ledgerCsv', () => {
     expect(csv[1]).toContain('Buy-in on credit')
     expect(csv[2]).toContain('"Payment from A, ""B"""')
     expect(csv[2].endsWith(',0')).toBe(true)
+  })
+})
+
+describe('dealerLedger', () => {
+  const round = (id: string, amount: number, rake: number, method: DealerRound['method']): DealerRound => ({
+    id, game_id: 'g', dealer_id: 'd', dealer_name: 'Lucy', amount, rake, method, note: null,
+    created_at: `2026-10-0${id}T20:00:00Z`, updated_at: null, game_name: 'Friday', game_date: '2026-10-02', tip_tax_pct: 10,
+  })
+  const payment: DealerPayment = {
+    id: 'p', dealer_id: 'd', direction: 'to_dealer', amount: 36, method: 'transfer', note: null, created_at: '2026-10-05T12:00:00Z', updated_at: null,
+  }
+
+  it('owes tips after tip tax; paid rounds settle at once, owed rounds wait for a payment', () => {
+    const owed = withBalances(dealerLedger('Lucy', [round('1', 50, 100, 'cash'), round('2', 40, 80, 'account')], [], [])).totals
+    // 50 − 5 tax paid on the spot; 40 − 4 tax owed
+    expect(owed.owedToThem).toBe(81)
+    expect(owed.ourPayments).toBe(45)
+    expect(owed.balance).toBe(36)
+    const settled = withBalances(dealerLedger('Lucy', [round('1', 50, 100, 'cash'), round('2', 40, 80, 'account')], [], [payment])).totals
+    expect(settled.balance).toBe(0)
+  })
+
+  it('shows rake-only rounds without moving the balance', () => {
+    const { rows, totals } = withBalances(dealerLedger('Lucy', [round('3', 0, 120, 'cash')], [], []))
+    expect(rows[0].title).toBe('Round (rake only)')
+    expect(rows[0].details.join(' ')).toContain('Rake $120')
+    expect(totals.balance).toBe(0)
   })
 })

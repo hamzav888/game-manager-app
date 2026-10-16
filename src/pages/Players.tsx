@@ -17,6 +17,7 @@ import {
   useAction,
 } from '../components/ui'
 import { createPlayer, listPlayerTotals } from '../lib/api'
+import { PeopleTabs } from './Dealers'
 import { shortDate } from '../lib/format'
 import { useLoader, useRealtime } from '../lib/hooks'
 
@@ -52,6 +53,7 @@ export function PlayersPage() {
 
   return (
     <>
+      <PeopleTabs />
       <PageHeader
         title="Players"
         sub={data ? `${data.length} regulars` : undefined}

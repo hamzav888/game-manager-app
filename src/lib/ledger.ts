@@ -3,9 +3,9 @@
 import type { RecordStamp } from './actors'
 import { formatStamp, money, shortDate, signedMoney } from './format'
 import { categoryLabel, methodLabel } from './types'
-import type { AccountTx, Expense, PartnerEntry, PartnerShareWithGame, PlayerPayment } from './types'
+import type { AccountTx, DealerPayment, DealerRound, Expense, PartnerEntry, PartnerShareWithGame, PlayerPayment } from './types'
 
-export type LedgerSource = 'transaction' | 'player_payment' | 'partner_entry' | 'partner_share' | 'expense'
+export type LedgerSource = 'transaction' | 'player_payment' | 'partner_entry' | 'partner_share' | 'expense' | 'dealer_round' | 'dealer_payment'
 
 export interface LedgerEntry {
   /** id of the underlying record */
@@ -186,6 +186,82 @@ export function partnerLedger(
       details: clean([`By ${e.method}`, e.note && `Note: ${e.note}`]),
       ourPayment: payout ? e.amount : 0,
       theirPayment: payout ? 0 : e.amount,
+      owedToThem: 0,
+      theyOwe: 0,
+    })
+  }
+  return out
+}
+
+// ---------------------------------------------------------------- dealers
+
+/**
+ * A dealer's statement. Each round, the house owes the dealer their tips minus
+ * the tip tax; paid on the spot unless the round says "owed". Dealer pay is
+ * owed and paid at once. The rake they collected is shown, but it's the
+ * house's money, so it doesn't move the balance.
+ */
+export function dealerLedger(
+  name: string,
+  rounds: DealerRound[],
+  pay: (Expense & { game_name: string; game_date: string })[],
+  payments: DealerPayment[],
+  stamps?: Map<string, RecordStamp>,
+): LedgerEntry[] {
+  const out: LedgerEntry[] = []
+  for (const r of rounds) {
+    const taxC = Math.round((c(r.amount) * r.tip_tax_pct) / 100)
+    const net = (c(r.amount) - taxC) / 100
+    const owed = r.method === 'account'
+    out.push({
+      id: r.id,
+      source: 'dealer_round',
+      at: r.created_at,
+      gameId: r.game_id,
+      editedAt: r.updated_at,
+      stamp: stamps?.get(r.id),
+      title: r.amount ? (owed ? 'Tips owed' : 'Tips') : 'Round (rake only)',
+      details: clean([
+        gameLabel(r.game_name, r.game_date),
+        `Rake ${money(r.rake)} collected for the house`,
+        r.amount > 0 && (taxC ? `Tips ${money(r.amount)} − ${money(taxC / 100)} tip tax` : `Tips ${money(r.amount)}`),
+        r.amount > 0 && (owed ? `Put on ${name}’s account — we owe it` : `Paid by ${methodLabel(r.method).toLowerCase()}`),
+        r.note && `Note: ${r.note}`,
+      ]),
+      owedToThem: net,
+      ourPayment: owed ? 0 : net,
+      theyOwe: 0,
+      theirPayment: 0,
+    })
+  }
+  for (const e of pay) {
+    out.push({
+      id: e.id,
+      source: 'expense',
+      at: e.created_at,
+      gameId: e.game_id,
+      editedAt: e.updated_at,
+      stamp: stamps?.get(e.id),
+      title: 'Dealer pay',
+      details: clean([gameLabel(e.game_name, e.game_date), e.description, `Paid by ${e.paid_by}`]),
+      owedToThem: e.amount,
+      ourPayment: e.amount,
+      theyOwe: 0,
+      theirPayment: 0,
+    })
+  }
+  for (const p of payments) {
+    const toThem = p.direction === 'to_dealer'
+    out.push({
+      id: p.id,
+      source: 'dealer_payment',
+      at: p.created_at,
+      editedAt: p.updated_at,
+      stamp: stamps?.get(p.id),
+      title: toThem ? `Payment to ${name}` : `Payment from ${name}`,
+      details: clean([`By ${p.method}`, toThem ? 'Settles what we owe' : 'Settles what they owe', p.note && `Note: ${p.note}`]),
+      ourPayment: toThem ? p.amount : 0,
+      theirPayment: toThem ? 0 : p.amount,
       owedToThem: 0,
       theyOwe: 0,
     })

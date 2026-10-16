@@ -4,6 +4,8 @@
 // same story.
 import type {
   AuditEntry,
+  Dealer,
+  DealerPayment,
   DealerTip,
   Expense,
   ExpenseCategory,
@@ -19,7 +21,11 @@ import type {
   Transaction,
 } from '../types'
 
-export const SAMPLE_EMAIL = 'sam@example.com'
+import { loginEmail } from '../username'
+
+export { loginEmail }
+
+export const SAMPLE_EMAIL = loginEmail('sam')
 export const SAMPLE_USER_ID = 'sample-user-sam'
 export const SAMPLE_ORG_ID = 'sample-org'
 
@@ -40,6 +46,8 @@ export interface SampleDb {
   /** organizations other than the one you're browsing (owner's view only) */
   extraOrgs: { org: SampleOrg; members: Member[] }[]
   partners: Partner[]
+  dealers: Dealer[]
+  dealer_payments: DealerPayment[]
   partner_entries: PartnerEntry[]
   partner_shares: PartnerShare[]
   players: Player[]
@@ -52,7 +60,7 @@ export interface SampleDb {
   nextAuditId: number
 }
 
-export const SAMPLE_VERSION = 9
+export const SAMPLE_VERSION = 10
 
 let idSeq = 0
 export const sampleId = () => `s-${Date.now().toString(36)}-${(idSeq++).toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -68,11 +76,15 @@ function rng(seed: number) {
   }
 }
 
+const member = (id: string, username: string, name: string, role: Member['role'], created_at: string): Member => ({
+  user_id: id, username, email: loginEmail(username), display_name: name, role, active: true, created_at,
+})
 const MEMBERS: Member[] = [
-  { user_id: SAMPLE_USER_ID, email: SAMPLE_EMAIL, display_name: 'Sam', role: 'admin', active: true, created_at: '2026-05-01T18:00:00.000Z' },
-  { user_id: 'sample-user-jordan', email: 'jordan@example.com', display_name: 'Jordan', role: 'organizer', active: true, created_at: '2026-05-01T18:05:00.000Z' },
-  { user_id: 'sample-user-priya', email: 'priya@example.com', display_name: 'Priya', role: 'admin', active: true, created_at: '2026-06-12T18:05:00.000Z' },
+  member(SAMPLE_USER_ID, 'sam', 'Sam', 'admin', '2026-05-01T18:00:00.000Z'),
+  member('sample-user-jordan', 'jordan', 'Jordan', 'organizer', '2026-05-01T18:05:00.000Z'),
+  member('sample-user-priya', 'priya', 'Priya', 'admin', '2026-06-12T18:05:00.000Z'),
 ]
+const ACTOR_IDS = new Map([...MEMBERS, member('sample-user-dev', 'dev', 'Dev', 'organizer', '')].map((m) => [m.email, m.user_id] as const))
 
 const PLAYER_NAMES = [
   'Danny K.', 'Omar', 'Jess', 'Kev', 'Tariq', 'Mike R.', 'Lena', 'Big Rob',
@@ -139,6 +151,7 @@ export function seedSample(): SampleDb {
     accounts: [
       ...MEMBERS.map((m, i) => ({
         id: m.user_id,
+        username: m.username,
         email: m.email,
         display_name: m.display_name,
         approved: true,
@@ -147,19 +160,21 @@ export function seedSample(): SampleDb {
         last_sign_in_at: localDate(i).toISOString(),
         organizations: null,
       })),
-      { id: 'sample-user-dev', email: 'dev@example.com', display_name: 'Dev', approved: true, is_owner: false, created_at: '2026-07-02T17:00:00.000Z', last_sign_in_at: localDate(6).toISOString(), organizations: null },
-      { id: 'sample-user-alex', email: 'alex@example.com', display_name: 'Alex', approved: false, is_owner: false, created_at: localDate(1).toISOString(), last_sign_in_at: localDate(1).toISOString(), organizations: null },
+      { id: 'sample-user-dev', username: 'dev', email: loginEmail('dev'), display_name: 'Dev', approved: true, is_owner: false, created_at: '2026-07-02T17:00:00.000Z', last_sign_in_at: localDate(6).toISOString(), organizations: null },
+      { id: 'sample-user-alex', username: 'alex', email: 'alex@gmail.com', display_name: 'Alex', approved: false, is_owner: false, created_at: localDate(1).toISOString(), last_sign_in_at: localDate(1).toISOString(), organizations: null },
     ],
     extraOrgs: [
       {
         org: { id: 'sample-org-eastside', name: 'Eastside Home Game', tip_tax_pct: 0, loss_discount_pct: 5, created_at: '2026-07-02T17:05:00.000Z' },
         members: [
-          { user_id: 'sample-user-priya', email: 'priya@example.com', display_name: 'Priya', role: 'admin', active: true, created_at: '2026-07-02T17:05:00.000Z' },
-          { user_id: 'sample-user-dev', email: 'dev@example.com', display_name: 'Dev', role: 'organizer', active: true, created_at: '2026-07-02T17:06:00.000Z' },
+          member('sample-user-priya', 'priya', 'Priya', 'admin', '2026-07-02T17:05:00.000Z'),
+          member('sample-user-dev', 'dev', 'Dev', 'organizer', '2026-07-02T17:06:00.000Z'),
         ],
       },
     ],
     partners: [],
+    dealers: [],
+    dealer_payments: [],
     partner_entries: [],
     partner_shares: [],
     players: [],
@@ -181,8 +196,11 @@ export function seedSample(): SampleDb {
     when: string,
   ) => {
     const row = (newRow ?? oldRow) as Record<string, unknown>
+    const accountLevel = ['profiles', 'passwords', 'sign_ins', 'app_admins'].includes(table)
     events.push({
+      org_id: accountLevel ? null : SAMPLE_ORG_ID,
       occurred_at: when,
+      actor_id: ACTOR_IDS.get(actor) ?? null,
       actor_email: actor,
       table_name: table,
       action,
@@ -190,11 +208,24 @@ export function seedSample(): SampleDb {
       game_id: table === 'games' ? String(row.id) : ((row.game_id as string) ?? null),
       player_id: table === 'players' ? String(row.id) : ((row.player_id as string) ?? null),
       partner_id: table === 'partners' ? String(row.id) : ((row.partner_id as string) ?? null),
+      dealer_id: table === 'dealers' ? String(row.id) : ((row.dealer_id as string) ?? null),
       old_data: oldRow ? { ...(oldRow as Record<string, unknown>) } : null,
       new_data: newRow ? { ...(newRow as Record<string, unknown>) } : null,
     })
   }
-  const actor = () => (r() < 0.55 ? SAMPLE_EMAIL : r() < 0.7 ? 'jordan@example.com' : 'priya@example.com')
+  const actor = () => (r() < 0.55 ? SAMPLE_EMAIL : r() < 0.7 ? loginEmail('jordan') : loginEmail('priya'))
+
+  // ------------------------------------------------ accounts (account-level history: only the owner sees it)
+  for (const a of db.accounts) {
+    log('profiles', 'INSERT', null, { id: a.id, username: a.username, display_name: a.display_name, approved: a.approved }, a.is_owner || !a.approved ? a.email ?? SAMPLE_EMAIL : SAMPLE_EMAIL, a.created_at)
+  }
+  for (let d = 30; d >= 0; d -= 2) {
+    for (const [i, m] of MEMBERS.entries()) {
+      if ((d + i) % 3 === 0) log('sign_ins', 'INSERT', null, { id: m.user_id, username: m.username }, m.email!, afternoon(d, 17 * 60 + 40 + i * 13))
+    }
+  }
+  log('passwords', 'INSERT', null, { id: 'sample-user-jordan', username: 'jordan', by: 'owner' }, SAMPLE_EMAIL, afternoon(44, 12 * 60 + 5))
+  log('passwords', 'INSERT', null, { id: 'sample-user-priya', username: 'priya', by: 'self' }, loginEmail('priya'), afternoon(20, 9 * 60 + 51))
 
   // ------------------------------------------------ partners
   const founded = localDate(160).toISOString()
@@ -214,6 +245,19 @@ export function seedSample(): SampleDb {
     log('partner_entries', 'INSERT', null, e, SAMPLE_EMAIL, when)
   }
   addEntry('Sam', 'contribution', 2000, afternoon(90, 15 * 60 + 12), 'Starting float for the cage')
+
+  // ------------------------------------------------ dealers (each has an account and a ledger)
+  for (const [i, name] of DEALERS.entries()) {
+    const d: Dealer = { id: sampleId(), name, phone: i === 1 ? '(555) 013-7781' : null, notes: null, active: true, created_at: founded }
+    db.dealers.push(d)
+    log('dealers', 'INSERT', null, d, SAMPLE_EMAIL, founded)
+  }
+  db.dealers[2].notes = 'Weekend shifts. Takes tips by transfer at the end of the month.'
+  const payDealer = (name: string, amount: number, when: string, note: string) => {
+    const row: DealerPayment = { id: sampleId(), dealer_id: dealerOf(name).id, direction: 'to_dealer', amount, method: 'transfer', note, created_at: when, updated_at: null }
+    db.dealer_payments.push(row)
+    log('dealer_payments', 'INSERT', null, row, SAMPLE_EMAIL, when)
+  }
 
   // ------------------------------------------------ players
   for (const name of PLAYER_NAMES) {
@@ -236,18 +280,38 @@ export function seedSample(): SampleDb {
     log('transactions', 'INSERT', null, t, actor(), when)
     return t
   }
-  const addRound = (g: Game, dealer: string, rake: number, amount: number, when: string, note: string | null = null) => {
-    const t: DealerTip = { id: sampleId(), game_id: g.id, dealer_name: dealer, amount, rake, note, created_at: when, updated_at: null }
+  const dealerOf = (name: string) => db.dealers.find((d) => d.name === name)!
+  const addRound = (
+    g: Game,
+    dealer: string,
+    rake: number,
+    amount: number,
+    when: string,
+    note: string | null = null,
+    method: DealerTip['method'] = 'cash',
+  ) => {
+    const t: DealerTip = {
+      id: sampleId(), game_id: g.id, dealer_id: dealerOf(dealer).id, dealer_name: dealer, amount, rake, method, note, created_at: when, updated_at: null,
+    }
     db.dealer_tips.push(t)
     log('dealer_tips', 'INSERT', null, t, actor(), when)
   }
-  const addExpense = (g: Game, category: ExpenseCategory, amount: number, payer: string | null, description: string | null, when: string) => {
+  const addExpense = (
+    g: Game,
+    category: ExpenseCategory,
+    amount: number,
+    payer: string | null,
+    description: string | null,
+    when: string,
+    dealer: string | null = null,
+  ) => {
     const e: Expense = {
       id: sampleId(),
       game_id: g.id,
       category,
       description,
       amount,
+      dealer_id: dealer ? dealerOf(dealer).id : null,
       partner_id: payer ? partner(payer).id : null,
       paid_by: payer ?? 'Game bank',
       created_at: when,
@@ -335,12 +399,14 @@ export function seedSample(): SampleDb {
     const tipParts = split(tips)
     const first = Math.floor(r() * DEALERS.length)
     for (let k = 0; k < roundCount; k++) {
-      addRound(g, DEALERS[(first + k) % DEALERS.length], rakes[k], Math.max(0, tipParts[k]), at(day, 40 + k * 40 + Math.floor(r() * 8)))
+      const dealer = DEALERS[(first + k) % DEALERS.length]
+      // Andre's tips go on his account; he's paid by transfer once a month.
+      addRound(g, dealer, rakes[k], Math.max(0, tipParts[k]), at(day, 40 + k * 40 + Math.floor(r() * 8)), null, dealer === 'Andre' ? 'account' : 'cash')
     }
 
     addExpense(g, 'food', round5(between(70, 190)), pick(['Sam', 'Jordan', 'Priya']), pick(['Pizza', 'Wings & fries', 'Shawarma platters', 'Tacos']), at(day, 30))
     if (r() < 0.5) addExpense(g, 'drinks', round5(between(35, 90)), null, 'Drinks & ice', at(day, 45))
-    if (r() < 0.6) addExpense(g, 'dealer_pay', round5(between(150, 260)), null, 'Dealer shift', at(day, 300))
+    if (r() < 0.6) addExpense(g, 'dealer_pay', round5(between(150, 260)), null, 'Dealer shift', at(day, 300), pick(DEALERS))
     if (daysAgo === 33) addExpense(g, 'venue', 300, 'Jordan', 'Back room rental', at(day, 0))
     if (daysAgo === 47) addExpense(g, 'venue', 350, 'Priya', 'Hall booking', at(day, 0))
 
@@ -357,6 +423,15 @@ export function seedSample(): SampleDb {
       addEntry('Jordan', 'payout', 700, payDay, 'Monthly split')
       addEntry('Priya', 'payout', 500, payDay, 'Monthly split')
     }
+  }
+
+  // Andre is paid what he's owed in tips, by transfer, at the end of each month.
+  for (const daysAgo of [64, 35]) {
+    const owedC = db.dealer_tips
+      .filter((t) => t.dealer_id === dealerOf('Andre').id && t.method === 'account' && t.created_at < localDate(daysAgo).toISOString())
+      .reduce((s2, t) => s2 + toCents(t.amount) - Math.round((toCents(t.amount) * TIP_TAX) / 100), 0)
+    const paidC = db.dealer_payments.reduce((s2, p) => s2 + toCents(p.amount), 0)
+    if (owedC - paidC > 0) payDealer('Andre', (owedC - paidC) / 100, afternoon(daysAgo, 11 * 60 + 20), 'Tips for the month')
   }
 
   // Account players pay down part of their tab.
@@ -423,7 +498,7 @@ export function seedSample(): SampleDb {
   })
   addRound(live, 'Marco', 95, 25, ago(158))
   addRound(live, 'Lucy', 120, 30, ago(117))
-  addRound(live, 'Andre', 85, 15, ago(76))
+  addRound(live, 'Andre', 85, 15, ago(76), null, 'account')
   addRound(live, 'Marco', 140, 35, ago(35), 'Big pot with Omar and Tariq')
   addExpense(live, 'food', 145, 'Jordan', 'Wings & fries', ago(150))
   addExpense(live, 'drinks', 40, null, 'Ice & mixers', ago(120))
@@ -454,7 +529,7 @@ export function seedSample(): SampleDb {
     buys.forEach((b, j) => addTx(side, p, 'buy_in', b, ago(90 - i * 3 - j * 40)))
     if (out !== null) addTx(side, p, 'cash_out', out, ago(20))
   })
-  addRound(side, 'Andre', 160, 40, ago(52))
+  addRound(side, 'Andre', 160, 40, ago(52), null, 'account')
 
   // ------------------------------------------------ finalize audit log in time order
   events.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at))

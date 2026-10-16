@@ -8,6 +8,7 @@ import { isSample } from './lib/mode'
 import { lastUsedOrg, setCurrentOrg } from './lib/org'
 import { supabase } from './lib/supabase'
 import type { Member, MyOrg } from './lib/types'
+import { loginName } from './lib/username'
 
 type AuthState =
   | { status: 'loading' }
@@ -27,6 +28,8 @@ interface AuthApi {
   /** a one-off message for the sign-in screen (e.g. a failed Google sign-in) */
   notice: string | null
   user: User | null
+  /** the signed-in account's username */
+  username: string | null
   /** the app owner: creates accounts and organizations */
   isOwner: boolean
   /** the owner created or approved this account */
@@ -65,7 +68,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // undefined = still checking, null = signed out
   const [user, setUser] = useState<User | null | undefined>(undefined)
   const [notice, setNotice] = useState<string | null>(null)
-  const [who, setWho] = useState({ is_owner: false, approved: false })
+  const [who, setWho] = useState<{ is_owner: boolean; approved: boolean; username: string | null }>({
+    is_owner: false,
+    approved: false,
+    username: null,
+  })
   const [orgs, setOrgs] = useState<MyOrg[] | null>(null)
   const [orgId, setOrgId] = useState<string | null>(null)
   const [members, setMembers] = useState<Member[]>([])
@@ -141,6 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       state,
       notice,
       user: user ?? null,
+      username: who.username ?? loginName(user?.email),
       isOwner: who.is_owner,
       approved: who.approved,
       orgs: orgs ?? [],
@@ -151,11 +159,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       actorName: (email) => {
         if (!email) return 'System'
         const m = members.find((x) => x.email === email)
-        return m?.display_name || email
+        return m?.display_name || m?.username || loginName(email) || email
       },
       memberName: (id) => {
         const m = members.find((x) => x.user_id === id)
-        return m ? m.display_name || m.email : null
+        return m ? m.display_name || m.username || loginName(m.email) : null
       },
       switchOrg: (id) => {
         setCurrentOrg(id)
@@ -179,7 +187,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setOrgId(null)
         setMembers([])
         setCurrentOrg(null)
-        setWho({ is_owner: false, approved: false })
+        setWho({ is_owner: false, approved: false, username: null })
       },
     }
   }, [orgs, orgId, user, members, error, notice, who, refresh, loadOrgs, navigate])

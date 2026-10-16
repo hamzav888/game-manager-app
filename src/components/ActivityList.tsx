@@ -5,7 +5,7 @@ import { listAudit } from '../lib/api'
 import { describeAudit } from '../lib/audit'
 import { formatStamp, timeAgo } from '../lib/format'
 import { useLoader, useRealtime } from '../lib/hooks'
-import type { AuditEntry, AuditFilter, Player } from '../lib/types'
+import type { AuditEntry, AuditFilter, NameBook, Player } from '../lib/types'
 import { Button, Card, Empty, ErrorBox, Loading, cx } from './ui'
 
 const PAGE = 50
@@ -27,20 +27,27 @@ function dayLabel(iso: string): string {
   return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })
 }
 
+const ACCOUNT_TABLES = new Set(['profiles', 'passwords', 'sign_ins', 'app_admins'])
+
 export function ActivityList({
   filter,
   playersById,
   gameNames,
   partnerNames,
+  dealerNames,
+  book,
   live,
 }: {
   filter: Omit<AuditFilter, 'beforeId' | 'limit'>
   playersById: Map<string, Player>
   gameNames?: Map<string, string>
   partnerNames?: Map<string, string>
+  dealerNames?: Map<string, string>
+  /** owner's all-organizations view: names for everything, plus the organization of each entry */
+  book?: NameBook
   live?: boolean
 }) {
-  const { actorName, memberName } = useAuth()
+  const { actorName: memberActor, memberName: teamName } = useAuth()
   // Older pages loaded via "Load older"; `null` = not loaded yet.
   const [older, setOlder] = useState<{ rows: AuditEntry[]; more: boolean } | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -68,16 +75,19 @@ export function ActivityList({
     }
   }, [entries, key])
 
-  const ctx = useMemo(
-    () => ({
-      playerName: (id: string | null | undefined) => (id ? (playersById.get(id)?.name ?? null) : null),
-      gameName: gameNames ? (id: string | null | undefined) => (id ? (gameNames.get(id) ?? null) : null) : undefined,
-      partnerName: (id: string | null | undefined) => (id ? (partnerNames?.get(id) ?? null) : null),
-      memberName,
-      actorName,
-    }),
-    [playersById, gameNames, partnerNames, actorName, memberName],
-  )
+  const ctx = useMemo(() => {
+    const look = (m?: Map<string, string>) => (id: string | null | undefined) => (id ? (m?.get(id) ?? null) : null)
+    return {
+      playerName: (id: string | null | undefined) => (id ? (playersById.get(id)?.name ?? book?.player.get(id) ?? null) : null),
+      gameName: gameNames || book ? (id: string | null | undefined) => (id ? (gameNames?.get(id) ?? book?.game.get(id) ?? null) : null) : undefined,
+      partnerName: (id: string | null | undefined) => (id ? (partnerNames?.get(id) ?? book?.partner.get(id) ?? null) : null),
+      dealerName: (id: string | null | undefined) => (id ? (dealerNames?.get(id) ?? book?.dealer.get(id) ?? null) : null),
+      orgName: book ? look(book.org) : undefined,
+      memberName: (id: string | null | undefined) => teamName(id) ?? (id ? (book?.account.get(id) ?? null) : null),
+      actorName: memberActor,
+    }
+  }, [playersById, gameNames, partnerNames, dealerNames, book, memberActor, teamName])
+  const actorOf = (e: AuditEntry) => (e.actor_id && book?.account.get(e.actor_id)) || ctx.actorName(e.actor_email)
 
   if (first.error) return <ErrorBox error={first.error} onRetry={first.reload} />
   if (!first.data) return <Loading />
@@ -108,6 +118,7 @@ export function ActivityList({
               {g.rows.map((e, i) => {
                 const d = describeAudit(e, ctx)
                 const gameLink = gameNames && e.game_id && e.table_name !== 'games' && gameNames.has(e.game_id)
+                const account = ACCOUNT_TABLES.has(e.table_name)
                 return (
                   <li key={e.id} className="relative flex gap-3.5 py-3">
                     {/* timeline */}
@@ -143,8 +154,8 @@ export function ActivityList({
                         </dl>
                       )}
                       <p className="mt-1.5 text-xs text-faint">
-                        {e.action === 'INSERT' ? 'Recorded' : e.action === 'UPDATE' ? 'Changed' : 'Deleted'} by{' '}
-                        <span className="text-muted">{d.actor}</span>
+                        {e.table_name === 'sign_ins' ? 'Account' : account ? 'Done by' : e.action === 'INSERT' ? 'Recorded by' : e.action === 'UPDATE' ? 'Changed by' : 'Deleted by'}{' '}
+                        <span className="text-muted">{e.actor_id || e.actor_email ? actorOf(e) : d.actor}</span>
                         {gameLink && (
                           <>
                             {' · '}

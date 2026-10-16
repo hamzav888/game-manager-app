@@ -290,7 +290,7 @@ export function PartnersPage() {
 
 export function PartnerPage() {
   const { id = '' } = useParams()
-  const { isAdmin } = useAuth()
+  const { isAdmin, isOwner } = useAuth()
   const { run } = useAction()
   const [tab, setTab] = useState<'ledger' | 'history'>('ledger')
   const [editing, setEditing] = useState(false)
@@ -301,7 +301,8 @@ export function PartnerPage() {
   const expenses = useLoader(() => listPartnerExpenses(id), [id])
   const shares = useLoader(() => listPartnerShares(id), [id])
   const roster = useLoader(listPlayers, [])
-  const stamps = useRecordStamps({ partnerId: id })
+  const stampRows = useMemo(() => [...(entries.data ?? []), ...(expenses.data ?? [])], [entries.data, expenses.data])
+  const stamps = useRecordStamps({ partnerId: id }, stampRows)
   const reloadAll = () => {
     void accounts.reload()
     void entries.reload()
@@ -355,7 +356,8 @@ export function PartnerPage() {
           onChange={setTab}
           options={[
             { value: 'ledger', label: 'Ledger' },
-            { value: 'history', label: 'Change history' },
+            // the history is for the app owner only
+            ...(isOwner ? [{ value: 'history' as const, label: 'Change history' }] : []),
           ]}
         />
       </div>
@@ -382,7 +384,7 @@ export function PartnerPage() {
         </div>
       )}
 
-      {tab === 'history' && (
+      {tab === 'history' && isOwner && (
         <div className="mt-5">
           <ActivityList filter={{ partnerId: p.id }} playersById={playersById} partnerNames={partnerNames} live />
         </div>
